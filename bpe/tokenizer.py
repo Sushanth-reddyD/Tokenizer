@@ -3,7 +3,9 @@
 Built from scratch for learning.
 """
 
+import json
 from collections import Counter
+from pathlib import Path
 
 END_OF_WORD = "</w>"
 
@@ -161,3 +163,34 @@ class BPETokenizer:
         text = "".join(id_to_token[i] for i in ids)
         text = text.replace(END_OF_WORD, " ")
         return text.strip()
+
+    def save(self, directory: str | Path) -> None:
+        """Persist vocab and merges to a directory.
+
+        Writes two files following the GPT-2 convention:
+          vocab.json  — token-to-ID mapping
+          merges.txt  — one merge per line, space-separated pair
+        """
+        path = Path(directory)
+        path.mkdir(parents=True, exist_ok=True)
+        with open(path / "vocab.json", "w") as f:
+            json.dump(self.vocab, f, ensure_ascii=False, indent=2)
+        with open(path / "merges.txt", "w") as f:
+            for a, b in self.merges:
+                f.write(f"{a} {b}\n")
+
+    @classmethod
+    def load(cls, directory: str | Path) -> "BPETokenizer":
+        """Load a tokenizer from a directory written by save()."""
+        path = Path(directory)
+        tok = cls()
+        with open(path / "vocab.json") as f:
+            tok.vocab = json.load(f)
+        with open(path / "merges.txt") as f:
+            for line in f:
+                line = line.rstrip("\n")
+                if not line:
+                    continue
+                a, b = line.split(" ", maxsplit=1)
+                tok.merges.append((a, b))
+        return tok

@@ -423,3 +423,57 @@ def test_decode_single_char_words():
     tok = BPETokenizer()
     tok.train("a b a b a b", vocab_size=100)
     assert tok.decode(tok.encode("a b")) == "a b"
+
+
+# ---------- BPETokenizer.save / load ----------
+
+def test_save_load_roundtrip(tmp_path):
+    tok = _make_trained_tokenizer()
+    tok.save(tmp_path / "model")
+    loaded = BPETokenizer.load(tmp_path / "model")
+    assert loaded.vocab == tok.vocab
+    assert loaded.merges == tok.merges
+
+
+def test_save_load_encode_matches(tmp_path):
+    text = ("low " * 5 + "lower " * 2 + "newest " * 6 + "widest " * 3).strip()
+    tok = BPETokenizer()
+    tok.train(text, vocab_size=100)
+    tok.save(tmp_path / "model")
+    loaded = BPETokenizer.load(tmp_path / "model")
+    assert loaded.encode(text) == tok.encode(text)
+    assert loaded.decode(loaded.encode(text)) == text
+
+
+def test_save_creates_directory(tmp_path):
+    tok = _make_trained_tokenizer()
+    nested = tmp_path / "a" / "b" / "c"
+    tok.save(nested)
+    assert (nested / "vocab.json").exists()
+    assert (nested / "merges.txt").exists()
+
+
+def test_save_load_empty_tokenizer(tmp_path):
+    tok = BPETokenizer()
+    tok.train("ab", vocab_size=100)  # no merges, just alphabet
+    tok.save(tmp_path / "model")
+    loaded = BPETokenizer.load(tmp_path / "model")
+    assert loaded.vocab == tok.vocab
+    assert loaded.merges == []
+
+
+def test_save_load_preserves_end_of_word_in_merges(tmp_path):
+    tok = BPETokenizer()
+    tok.train("ab ab", vocab_size=100)
+    # merges include ('ab', '</w>') — </w> contains a space, but
+    # split(..., maxsplit=1) in load() handles this.
+    tok.save(tmp_path / "model")
+    loaded = BPETokenizer.load(tmp_path / "model")
+    assert loaded.merges == tok.merges
+    assert any(END_OF_WORD in b for _, b in loaded.merges)
+
+
+def test_load_missing_directory_raises():
+    import pytest
+    with pytest.raises(FileNotFoundError):
+        BPETokenizer.load("/nonexistent/path")
