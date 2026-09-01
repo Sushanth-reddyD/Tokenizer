@@ -2,6 +2,7 @@ from collections import Counter
 
 from bpe.tokenizer import (
     END_OF_WORD,
+    BPETokenizer,
     apply_merge,
     count_pairs,
     merge_word,
@@ -100,19 +101,16 @@ def test_merge_word_pair_not_present_returns_unchanged():
 
 
 def test_merge_word_multiple_non_overlapping_occurrences():
-    # (a, b) appears twice, non-overlapping
     assert merge_word(["a", "b", "c", "a", "b"], ("a", "b")) == [
         "ab", "c", "ab",
     ]
 
 
 def test_merge_word_overlapping_matches_are_not_double_counted():
-    # ['a','a','a'] merging (a,a) -> non-overlapping left-to-right → ['aa','a']
     assert merge_word(["a", "a", "a"], ("a", "a")) == ["aa", "a"]
 
 
 def test_merge_word_four_a_produces_two_aa():
-    # ['a','a','a','a'] merging (a,a) → ['aa','aa']
     assert merge_word(["a", "a", "a", "a"], ("a", "a")) == ["aa", "aa"]
 
 
@@ -160,7 +158,7 @@ def test_apply_merge_only_affects_words_containing_pair():
     ]
     assert apply_merge(corpus, ("l", "o")) == [
         ["lo", "w", END_OF_WORD],
-        ["c", "a", "t", END_OF_WORD],  # unchanged
+        ["c", "a", "t", END_OF_WORD],
     ]
 
 
@@ -172,3 +170,107 @@ def test_apply_merge_does_not_mutate_input():
     corpus = [["a", "b", "c"]]
     apply_merge(corpus, ("a", "b"))
     assert corpus == [["a", "b", "c"]]
+
+
+# ---------- BPETokenizer.train ----------
+
+def test_bpe_init_starts_empty():
+    tok = BPETokenizer()
+    assert tok.vocab == {}
+    assert tok.merges == []
+
+
+def test_train_tiny_repeating_corpus():
+    # Corpus "ab ab" — trace by hand:
+    #   pairs: (a,b)=2, (b,</w>)=2. Alphabetical tie-break → (a,b) wins.
+    #   after merge: [['ab','</w>'], ['ab','</w>']]
+    #   pairs: (ab,</w>)=2 → merge.
+    #   corpus now [['ab</w>'], ['ab</w>']] — no more pairs. Stop.
+    tok = BPETokenizer()
+    tok.train("ab ab", vocab_size=100)
+    assert tok.merges == [("a", "b"), ("ab", END_OF_WORD)]
+    # Initial alphabet is {'</w>', 'a', 'b'} — sorts as: '</w>' < 'a' < 'b'
+    # ('<' has ASCII 60, 'a' has 97, 'b' has 98).
+    assert tok.vocab == {
+        END_OF_WORD: 0,
+        "a": 1,
+        "b": 2,
+        "ab": 3,
+        "ab" + END_OF_WORD: 4,
+    }
+
+
+def test_train_sennrich_first_four_merges():
+    # Canonical Sennrich et al. 2016 example, first four merges verified
+    # against the paper's trace.
+    text = (
+        "low " * 5
+        + "lower " * 2
+        + "newest " * 6
+        + "widest " * 3
+    ).strip()
+    tok = BPETokenizer()
+    tok.train(text, vocab_size=100)
+    assert tok.merges[:4] == [
+        ("e", "s"),           # (e,s) count 9
+        ("es", "t"),          # (es,t) count 9
+        ("est", END_OF_WORD), # (est,</w>) count 9
+        ("l", "o"),           # (l,o) count 7 — first alpha winner at count 7
+    ]
+
+
+def test_train_no_repeating_pair_yields_no_merges():
+    # Single word "ab" appears once → (a,b) count 1, (b,</w>) count 1.
+    # max_count is 1 → stop with no merges.
+    tok = BPETokenizer()
+    tok.train("ab", vocab_size=100)
+    assert tok.merges == []
+    # Vocab is just the initial alphabet.
+    assert set(tok.vocab.keys()) == {"a", "b", END_OF_WORD}
+
+
+def test_train_respects_vocab_size_upper_bound():
+    text = ("low " * 5 + "lower " * 2 + "newest " * 6 + "widest " * 3).strip()
+    tok = BPETokenizer()
+    tok.train(text, vocab_size=12)
+    assert len(tok.vocab) <= 12
+
+
+def test_train_is_deterministic():
+    text = "low lower newest widest " * 3
+    a, b = BPETokenizer(), BPETokenizer()
+    a.train(text, vocab_size=50)
+    b.train(text, vocab_size=50)
+    assert a.vocab == b.vocab
+    assert a.merges == b.merges
+
+
+def test_train_empty_text_leaves_empty_tokenizer():
+    tok = BPETokenizer()
+    tok.train("", vocab_size=100)
+    assert tok.vocab == {}
+    assert tok.merges == []
+
+
+def test_train_ids_assigned_in_learning_order():
+    # After training, the very first learned merge should have vocab ID equal
+    # to the size of the initial alphabet (i.e., appended right after it).
+    text = ("low " * 5 + "lower " * 2 + "newest " * 6 + "widest " * 3).strip()
+    tok = BPETokenizer()
+    tok.train(text, vocab_size=100)
+    initial_chars = {"l", "o", "w", "e", "r", "n", "s", "t", "i", "d", END_OF_WORD}
+    first_merge = tok.merges[0]
+    first_merged_token = first_merge[0] + first_merge[1]
+    assert tok.vocab[first_merged_token] == len(initial_chars)
+
+
+def test_train_overwrites_prior_training():
+    tok = BPETokenizer()
+    tok.train("ab ab ab", vocab_size=100)
+    first_run_merges = tok.merges.copy()
+    first_run_vocab = tok.vocab.copy()
+
+    tok.train("cd cd cd", vocab_size=100)
+    assert tok.merges != first_run_merges
+    assert tok.vocab != first_run_vocab
+    assert "a" not in tok.vocab  # 'a' is gone entirely — was never in second corpus

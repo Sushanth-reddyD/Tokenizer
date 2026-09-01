@@ -27,12 +27,6 @@ def count_pairs(corpus: list[list[str]]) -> Counter[tuple[str, str]]:
 
     Each word contributes (len(word) - 1) pairs. If a word appears multiple
     times in the corpus, its pairs are counted multiple times.
-
-    Example:
-        count_pairs([['l', 'o', 'w', '</w>'],
-                     ['l', 'o', 'w', 'e', 'r', '</w>']])
-        -> Counter({('l', 'o'): 2, ('o', 'w'): 2, ('w', '</w>'): 1,
-                    ('w', 'e'): 1, ('e', 'r'): 1, ('r', '</w>'): 1})
     """
     pair_counts: Counter[tuple[str, str]] = Counter()
     for word in corpus:
@@ -47,13 +41,6 @@ def merge_word(word: list[str], pair: tuple[str, str]) -> list[str]:
     Every adjacent occurrence of (a, b) is fused into the single token 'ab'.
     Overlapping matches are NOT counted twice — after a merge, we skip
     forward by two positions.
-
-    Example:
-        merge_word(['l', 'o', 'w', 'e', 'r', '</w>'], ('l', 'o'))
-        -> ['lo', 'w', 'e', 'r', '</w>']
-
-        merge_word(['a', 'a', 'a'], ('a', 'a'))
-        -> ['aa', 'a']         # not ['aa', 'aa'] — no overlap
     """
     a, b = pair
     merged_token = a + b
@@ -62,7 +49,7 @@ def merge_word(word: list[str], pair: tuple[str, str]) -> list[str]:
     while i < len(word):
         if i < len(word) - 1 and word[i] == a and word[i + 1] == b:
             result.append(merged_token)
-            i += 2                # skip both tokens we just consumed
+            i += 2
         else:
             result.append(word[i])
             i += 1
@@ -72,8 +59,57 @@ def merge_word(word: list[str], pair: tuple[str, str]) -> list[str]:
 def apply_merge(
     corpus: list[list[str]], pair: tuple[str, str]
 ) -> list[list[str]]:
-    """Return a new corpus with every occurrence of `pair` merged.
-
-    Does not mutate the input. Delegates to `merge_word` per word.
-    """
+    """Return a new corpus with every occurrence of `pair` merged."""
     return [merge_word(word, pair) for word in corpus]
+
+
+class BPETokenizer:
+    """Char-level Byte Pair Encoding tokenizer.
+
+    Attributes:
+        vocab:  Mapping from token string to integer ID. IDs are assigned in
+                the order tokens enter the vocab — first the sorted initial
+                alphabet, then each learned merge in learning order.
+        merges: Ordered list of (a, b) pairs learned by train(). Position in
+                the list is the merge's "rank" — earlier = learned first.
+    """
+
+    def __init__(self) -> None:
+        self.vocab: dict[str, int] = {}
+        self.merges: list[tuple[str, str]] = []
+
+    def train(self, text: str, vocab_size: int) -> None:
+        """Learn BPE merges from `text` until vocab reaches `vocab_size`.
+
+        Overwrites any prior training on this instance. Stops early when no
+        repeating pair remains (further merges would not compress anything).
+        """
+        corpus = pretokenize(text)
+
+        # Initial alphabet = every unique character in the corpus (plus </w>,
+        # which pretokenize appends to every word). Sorting gives deterministic
+        # ID assignment.
+        initial_alphabet: set[str] = set()
+        for word in corpus:
+            initial_alphabet.update(word)
+        self.vocab = {tok: i for i, tok in enumerate(sorted(initial_alphabet))}
+        self.merges = []
+
+        while len(self.vocab) < vocab_size:
+            pair_counts = count_pairs(corpus)
+            if not pair_counts:
+                break  # every word collapsed to a single token
+
+            max_count = max(pair_counts.values())
+            if max_count < 2:
+                break  # no repeating pair; further merges don't compress
+
+            # Alphabetical tie-break among pairs at max_count → deterministic.
+            best_pair = min(
+                pair for pair, count in pair_counts.items() if count == max_count
+            )
+
+            corpus = apply_merge(corpus, best_pair)
+            merged_token = best_pair[0] + best_pair[1]
+            self.vocab[merged_token] = len(self.vocab)
+            self.merges.append(best_pair)
