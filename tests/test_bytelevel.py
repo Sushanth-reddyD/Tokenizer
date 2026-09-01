@@ -1,3 +1,5 @@
+from collections import Counter
+
 import pytest
 
 from bytelevel.bytemap import (
@@ -7,6 +9,7 @@ from bytelevel.bytemap import (
     unicode_to_bytes,
 )
 from bytelevel.pretokenizer import pretokenize, split_text
+from bytelevel.tokenizer import apply_merge, build_corpus, count_pairs, merge_chunk
 
 
 # ---------- split_text: the lossless invariant ----------
@@ -222,3 +225,129 @@ def test_returned_maps_are_copies():
     inverse = unicode_to_bytes()
     del inverse["Ġ"]
     assert unicode_to_bytes()["Ġ"] == 32
+
+
+# ---------- build_corpus ----------
+
+def test_build_corpus_maps_text_to_byte_ids():
+    assert build_corpus("the the cat") == {
+        (116, 104, 101): 1,        # 'the'
+        (32, 116, 104, 101): 1,    # ' the'
+        (32, 99, 97, 116): 1,      # ' cat'
+    }
+
+
+def test_build_corpus_groups_identical_chunks():
+    """Note ' the' (leading space) is a different chunk from 'the'. Only the
+    two space-prefixed occurrences group together."""
+    assert build_corpus("the the the") == {
+        (116, 104, 101): 1,
+        (32, 116, 104, 101): 2,
+    }
+
+
+def test_build_corpus_multibyte_character():
+    assert build_corpus("é") == {(195, 169): 1}
+
+
+def test_build_corpus_empty_text():
+    assert build_corpus("") == {}
+
+
+# ---------- count_pairs ----------
+
+def test_count_pairs_basic():
+    assert count_pairs({(1, 2, 3): 1}) == Counter({(1, 2): 1, (2, 3): 1})
+
+
+def test_count_pairs_weights_by_frequency():
+    """A chunk seen 500 times contributes each of its pairs 500 times."""
+    assert count_pairs({(1, 2): 500}) == Counter({(1, 2): 500})
+
+
+def test_count_pairs_sums_across_chunks():
+    assert count_pairs({(1, 2, 3): 2, (9, 1, 2): 5}) == Counter(
+        {(1, 2): 7, (2, 3): 2, (9, 1): 5}
+    )
+
+
+def test_count_pairs_single_id_chunk_has_no_pairs():
+    assert count_pairs({(42,): 100}) == Counter()
+
+
+def test_count_pairs_empty_corpus():
+    assert count_pairs({}) == Counter()
+
+
+def test_count_pairs_counts_repeated_pair_within_chunk():
+    assert count_pairs({(1, 2, 1, 2): 1}) == Counter({(1, 2): 2, (2, 1): 1})
+
+
+# ---------- merge_chunk ----------
+
+def test_merge_chunk_basic():
+    assert merge_chunk((1, 2, 3), (1, 2), 256) == (256, 3)
+
+
+def test_merge_chunk_does_not_overlap():
+    """The (97, 97, 97) case: skip two after a hit, so the third 97 is left
+    alone rather than being merged into a second pair."""
+    assert merge_chunk((97, 97, 97), (97, 97), 256) == (256, 97)
+
+
+def test_merge_chunk_multiple_occurrences():
+    assert merge_chunk((1, 2, 9, 1, 2), (1, 2), 256) == (256, 9, 256)
+
+
+def test_merge_chunk_at_start_and_end():
+    assert merge_chunk((1, 2, 9), (1, 2), 256) == (256, 9)
+    assert merge_chunk((9, 1, 2), (1, 2), 256) == (9, 256)
+
+
+def test_merge_chunk_no_match_returns_equal_chunk():
+    assert merge_chunk((1, 2, 3), (7, 8), 256) == (1, 2, 3)
+
+
+def test_merge_chunk_single_id_and_empty():
+    assert merge_chunk((5,), (1, 2), 256) == (5,)
+    assert merge_chunk((), (1, 2), 256) == ()
+
+
+def test_merge_chunk_returns_a_tuple():
+    """Tuples are the native type here so chunks stay hashable — usable as
+    corpus keys and, later, as encode cache keys."""
+    assert isinstance(merge_chunk((1, 2), (1, 2), 256), tuple)
+
+
+def test_merge_chunk_new_id_is_used_verbatim():
+    """Unlike piece #1, the merged token is not derived from the pair."""
+    assert merge_chunk((1, 2), (1, 2), 9999) == (9999,)
+
+
+# ---------- apply_merge ----------
+
+def test_apply_merge_fans_out_across_corpus():
+    corpus = {(1, 2, 3): 4, (9, 1, 2): 7}
+    assert apply_merge(corpus, (1, 2), 256) == {(256, 3): 4, (9, 256): 7}
+
+
+def test_apply_merge_preserves_untouched_chunks():
+    corpus = {(1, 2): 3, (7, 8): 5}
+    assert apply_merge(corpus, (1, 2), 256) == {(256,): 3, (7, 8): 5}
+
+
+def test_apply_merge_accumulates_colliding_chunks():
+    """Two distinct chunks can merge to the same tuple. Their frequencies must
+    sum — plain assignment would silently drop one."""
+    corpus = {(1, 2, 3): 5, (256, 3): 7}
+    assert apply_merge(corpus, (1, 2), 256) == {(256, 3): 12}
+
+
+def test_apply_merge_does_not_mutate_input():
+    corpus = {(1, 2, 3): 4}
+    apply_merge(corpus, (1, 2), 256)
+    assert corpus == {(1, 2, 3): 4}
+
+
+def test_apply_merge_empty_corpus():
+    assert apply_merge({}, (1, 2), 256) == {}
