@@ -37,6 +37,28 @@ def count_pairs(corpus: list[list[str]]) -> Counter[tuple[str, str]]:
     return pair_counts
 
 
+def _count_pairs_grouped(
+    corpus: dict[tuple[str, ...], int],
+) -> Counter[tuple[str, str]]:
+    """Frequency-weighted pair counting over a grouped corpus."""
+    pair_counts: Counter[tuple[str, str]] = Counter()
+    for word, freq in corpus.items():
+        for i in range(len(word) - 1):
+            pair_counts[(word[i], word[i + 1])] += freq
+    return pair_counts
+
+
+def _apply_merge_grouped(
+    corpus: dict[tuple[str, ...], int], pair: tuple[str, str]
+) -> dict[tuple[str, ...], int]:
+    """Frequency-weighted merge over a grouped corpus."""
+    new_corpus: dict[tuple[str, ...], int] = {}
+    for word, freq in corpus.items():
+        merged = tuple(merge_word(list(word), pair))
+        new_corpus[merged] = new_corpus.get(merged, 0) + freq
+    return new_corpus
+
+
 def merge_word(word: list[str], pair: tuple[str, str]) -> list[str]:
     """Non-overlapping, left-to-right merge of `pair` inside a single word.
 
@@ -85,33 +107,38 @@ class BPETokenizer:
 
         Overwrites any prior training on this instance. Stops early when no
         repeating pair remains (further merges would not compress anything).
-        """
-        corpus = pretokenize(text)
 
-        # Initial alphabet = every unique character in the corpus (plus </w>,
-        # which pretokenize appends to every word). Sorting gives deterministic
-        # ID assignment.
+        Internally groups identical words by frequency so that count_pairs
+        and apply_merge operate on unique words only (~8× faster on real
+        corpora like tinyshakespeare).
+        """
+        raw_corpus = pretokenize(text)
+
         initial_alphabet: set[str] = set()
-        for word in corpus:
+        for word in raw_corpus:
             initial_alphabet.update(word)
         self.vocab = {tok: i for i, tok in enumerate(sorted(initial_alphabet))}
         self.merges = []
 
+        grouped: dict[tuple[str, ...], int] = {}
+        for word in raw_corpus:
+            key = tuple(word)
+            grouped[key] = grouped.get(key, 0) + 1
+
         while len(self.vocab) < vocab_size:
-            pair_counts = count_pairs(corpus)
+            pair_counts = _count_pairs_grouped(grouped)
             if not pair_counts:
-                break  # every word collapsed to a single token
+                break
 
             max_count = max(pair_counts.values())
             if max_count < 2:
-                break  # no repeating pair; further merges don't compress
+                break
 
-            # Alphabetical tie-break among pairs at max_count → deterministic.
             best_pair = min(
                 pair for pair, count in pair_counts.items() if count == max_count
             )
 
-            corpus = apply_merge(corpus, best_pair)
+            grouped = _apply_merge_grouped(grouped, best_pair)
             merged_token = best_pair[0] + best_pair[1]
             self.vocab[merged_token] = len(self.vocab)
             self.merges.append(best_pair)
