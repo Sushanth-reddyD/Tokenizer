@@ -147,3 +147,17 @@ class BPETokenizer:
         Raises KeyError if any character in text was not seen during training.
         """
         return [self.vocab[tok] for tok in self.tokenize(text)]
+
+    def decode(self, ids: list[int]) -> str:
+        """Decode a list of token IDs back into a string.
+
+        Reverses encode(): maps IDs to token strings, concatenates them,
+        then converts every </w> (or suffix containing it) into a space.
+        Trailing space is stripped so decode(encode(text)) == text.
+
+        Raises KeyError if an ID is not in the vocab.
+        """
+        id_to_token = {i: tok for tok, i in self.vocab.items()}
+        text = "".join(id_to_token[i] for i in ids)
+        text = text.replace(END_OF_WORD, " ")
+        return text.strip()

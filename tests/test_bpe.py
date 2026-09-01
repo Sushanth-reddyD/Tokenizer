@@ -377,3 +377,49 @@ def test_encode_is_deterministic():
     tok = BPETokenizer()
     tok.train(text, vocab_size=50)
     assert tok.encode("lower newest") == tok.encode("lower newest")
+
+
+# ---------- BPETokenizer.decode ----------
+
+def test_decode_single_word():
+    tok = _make_trained_tokenizer()
+    assert tok.decode(tok.encode("low")) == "low"
+
+
+def test_decode_multi_word():
+    tok = _make_trained_tokenizer()
+    assert tok.decode(tok.encode("lower low")) == "lower low"
+
+
+def test_decode_roundtrip_sennrich():
+    text = ("low " * 5 + "lower " * 2 + "newest " * 6 + "widest " * 3).strip()
+    tok = BPETokenizer()
+    tok.train(text, vocab_size=100)
+    assert tok.decode(tok.encode(text)) == text
+
+
+def test_decode_empty_list():
+    tok = _make_trained_tokenizer()
+    assert tok.decode([]) == ""
+
+
+def test_decode_unknown_id_raises_keyerror():
+    tok = _make_trained_tokenizer()
+    import pytest
+    with pytest.raises(KeyError):
+        tok.decode([999])
+
+
+def test_decode_merged_end_of_word_token():
+    # Train until </w> gets merged into a token (e.g. "ab</w>").
+    # decode must still recover the space from the embedded </w>.
+    tok = BPETokenizer()
+    tok.train("ab ab", vocab_size=100)
+    # merges produce "ab" then "ab</w>", so vocab has "ab</w>" as a token.
+    assert tok.decode(tok.encode("ab ab")) == "ab ab"
+
+
+def test_decode_single_char_words():
+    tok = BPETokenizer()
+    tok.train("a b a b a b", vocab_size=100)
+    assert tok.decode(tok.encode("a b")) == "a b"
