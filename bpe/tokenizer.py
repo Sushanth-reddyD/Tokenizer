@@ -39,3 +39,41 @@ def count_pairs(corpus: list[list[str]]) -> Counter[tuple[str, str]]:
         for i in range(len(word) - 1):
             pair_counts[(word[i], word[i + 1])] += 1
     return pair_counts
+
+
+def merge_word(word: list[str], pair: tuple[str, str]) -> list[str]:
+    """Non-overlapping, left-to-right merge of `pair` inside a single word.
+
+    Every adjacent occurrence of (a, b) is fused into the single token 'ab'.
+    Overlapping matches are NOT counted twice — after a merge, we skip
+    forward by two positions.
+
+    Example:
+        merge_word(['l', 'o', 'w', 'e', 'r', '</w>'], ('l', 'o'))
+        -> ['lo', 'w', 'e', 'r', '</w>']
+
+        merge_word(['a', 'a', 'a'], ('a', 'a'))
+        -> ['aa', 'a']         # not ['aa', 'aa'] — no overlap
+    """
+    a, b = pair
+    merged_token = a + b
+    result: list[str] = []
+    i = 0
+    while i < len(word):
+        if i < len(word) - 1 and word[i] == a and word[i + 1] == b:
+            result.append(merged_token)
+            i += 2                # skip both tokens we just consumed
+        else:
+            result.append(word[i])
+            i += 1
+    return result
+
+
+def apply_merge(
+    corpus: list[list[str]], pair: tuple[str, str]
+) -> list[list[str]]:
+    """Return a new corpus with every occurrence of `pair` merged.
+
+    Does not mutate the input. Delegates to `merge_word` per word.
+    """
+    return [merge_word(word, pair) for word in corpus]
