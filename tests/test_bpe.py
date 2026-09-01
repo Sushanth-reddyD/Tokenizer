@@ -274,3 +274,106 @@ def test_train_overwrites_prior_training():
     assert tok.merges != first_run_merges
     assert tok.vocab != first_run_vocab
     assert "a" not in tok.vocab  # 'a' is gone entirely — was never in second corpus
+
+
+# ---------- BPETokenizer.tokenize ----------
+
+def _make_trained_tokenizer():
+    """Train on "low low lower" with vocab_size=8 — the dry-run example."""
+    tok = BPETokenizer()
+    tok.train("low low lower", vocab_size=8)
+    return tok
+
+
+def test_tokenize_known_word():
+    tok = _make_trained_tokenizer()
+    assert tok.tokenize("low") == ["low", END_OF_WORD]
+
+
+def test_tokenize_partial_merge():
+    tok = _make_trained_tokenizer()
+    # "lower" → merges (l,o) and (lo,w), but 'e' and 'r' stay separate.
+    assert tok.tokenize("lower") == ["low", "e", "r", END_OF_WORD]
+
+
+def test_tokenize_multi_word():
+    tok = _make_trained_tokenizer()
+    assert tok.tokenize("lower low") == [
+        "low", "e", "r", END_OF_WORD,
+        "low", END_OF_WORD,
+    ]
+
+
+def test_tokenize_min_rank_beats_leftmost():
+    # Manually construct a tokenizer where (a,b) has rank 0 and (x,y)
+    # has rank 1. For word "xyab", leftmost pair is (x,y) but min-rank
+    # picks (a,b) first.
+    tok = BPETokenizer()
+    tok.vocab = {
+        END_OF_WORD: 0, "a": 1, "b": 2, "x": 3, "y": 4,
+        "ab": 5, "xy": 6,
+    }
+    tok.merges = [("a", "b"), ("x", "y")]
+    # Word "xyab" → ['x','y','a','b','</w>']
+    # Pairs: (x,y)=rank1, (a,b)=rank0. Min-rank picks (a,b).
+    # → ['x','y','ab','</w>'], then (x,y)=rank1 → ['xy','ab','</w>'].
+    tokens = tok.tokenize("xyab")
+    assert tokens == ["xy", "ab", END_OF_WORD]
+
+
+def test_tokenize_no_merges_returns_characters():
+    tok = BPETokenizer()
+    tok.train("ab", vocab_size=100)  # no repeating pair → no merges
+    assert tok.tokenize("ab") == ["a", "b", END_OF_WORD]
+
+
+def test_tokenize_empty_string():
+    tok = _make_trained_tokenizer()
+    assert tok.tokenize("") == []
+
+
+def test_tokenize_unknown_char_raises_keyerror():
+    tok = _make_trained_tokenizer()
+    # 'x' was never seen during training.
+    tokens = tok.tokenize("lox")
+    assert "x" in tokens
+    import pytest
+    with pytest.raises(KeyError):
+        tok.encode("lox")
+
+
+# ---------- BPETokenizer.encode ----------
+
+def test_encode_known_word():
+    tok = _make_trained_tokenizer()
+    # vocab: {'</w>':0, 'e':1, 'l':2, 'o':3, 'r':4, 'w':5, 'lo':6, 'low':7}
+    assert tok.encode("low") == [7, 0]
+
+
+def test_encode_partial_merge():
+    tok = _make_trained_tokenizer()
+    assert tok.encode("lower") == [7, 1, 4, 0]
+
+
+def test_encode_multi_word():
+    tok = _make_trained_tokenizer()
+    assert tok.encode("lower low") == [7, 1, 4, 0, 7, 0]
+
+
+def test_encode_roundtrip_with_sennrich_corpus():
+    text = ("low " * 5 + "lower " * 2 + "newest " * 6 + "widest " * 3).strip()
+    tok = BPETokenizer()
+    tok.train(text, vocab_size=100)
+    ids = tok.encode(text)
+    assert all(isinstance(i, int) for i in ids)
+    assert len(ids) > 0
+    # Every ID in the output should be a valid vocab value.
+    valid_ids = set(tok.vocab.values())
+    assert all(i in valid_ids for i in ids)
+
+
+def test_encode_is_deterministic():
+    text = "low lower newest widest " * 3
+    tok = BPETokenizer()
+    tok.train(text, vocab_size=50)
+    assert tok.encode("lower newest") == tok.encode("lower newest")

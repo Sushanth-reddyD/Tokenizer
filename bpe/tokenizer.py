@@ -113,3 +113,37 @@ class BPETokenizer:
             merged_token = best_pair[0] + best_pair[1]
             self.vocab[merged_token] = len(self.vocab)
             self.merges.append(best_pair)
+
+    def tokenize(self, text: str) -> list[str]:
+        """Segment text into BPE tokens (strings) using learned merges.
+
+        Uses the per-word min-rank algorithm: for each word, repeatedly
+        find the adjacent pair with the lowest rank (earliest learned merge)
+        and apply it, until no known pair remains.
+
+        Raises KeyError if the text contains characters not in the vocab.
+        """
+        ranks = {pair: i for i, pair in enumerate(self.merges)}
+        tokens: list[str] = []
+        for word in pretokenize(text):
+            while len(word) > 1:
+                best_pair = None
+                best_rank = len(self.merges)
+                for i in range(len(word) - 1):
+                    pair = (word[i], word[i + 1])
+                    rank = ranks.get(pair)
+                    if rank is not None and rank < best_rank:
+                        best_rank = rank
+                        best_pair = pair
+                if best_pair is None:
+                    break
+                word = merge_word(word, best_pair)
+            tokens.extend(word)
+        return tokens
+
+    def encode(self, text: str) -> list[int]:
+        """Encode text into a list of integer token IDs.
+
+        Raises KeyError if any character in text was not seen during training.
+        """
+        return [self.vocab[tok] for tok in self.tokenize(text)]
