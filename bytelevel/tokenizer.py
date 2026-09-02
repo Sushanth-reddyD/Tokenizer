@@ -183,3 +183,44 @@ class ByteLevelBPETokenizer:
                     f"{best_pair} -> {new_id} "
                     f"({max_count} occurrences) {self.vocab[new_id]!r}"
                 )
+
+    def encode(self, text: str) -> list[int]:
+        """Encode text into a list of integer token IDs.
+
+        Uses the per-chunk min-rank algorithm: for each pretokenized chunk,
+        repeatedly find the adjacent pair with the lowest rank (earliest
+        learned merge) and apply it, until no known pair remains.
+
+        Never raises on unseen input — every byte is in the base vocab.
+        """
+        ranks = {pair: rank for rank, pair in enumerate(self.merges)}
+        ids: list[int] = []
+        for chunk_bytes in pretokenize(text):
+            chunk = tuple(chunk_bytes)
+            while len(chunk) > 1:
+                best_pair = None
+                best_rank = len(self.merges)
+                for i in range(len(chunk) - 1):
+                    pair = (chunk[i], chunk[i + 1])
+                    rank = ranks.get(pair)
+                    if rank is not None and rank < best_rank:
+                        best_rank = rank
+                        best_pair = pair
+                if best_pair is None:
+                    break
+                chunk = merge_chunk(chunk, best_pair, 256 + best_rank)
+            ids.extend(chunk)
+        return ids
+
+    def tokenize(self, text: str) -> list[bytes]:
+        """Segment text into BPE tokens (byte strings).
+
+        Convenience wrapper around encode() — maps each ID back to its byte
+        content via the vocab. Useful for inspecting what the tokenizer
+        actually produces.
+
+        Piece #1 had this relationship inverted: tokenize() did the work and
+        returned strings, encode() wrapped it. Here encode() is primary
+        because the merge algorithm works with integer IDs natively.
+        """
+        return [self.vocab[i] for i in self.encode(text)]

@@ -466,3 +466,98 @@ def test_fresh_tokenizer_has_base_vocab():
     assert tok.vocab[0] == b"\x00"
     assert tok.vocab[32] == b" "
     assert tok.vocab[255] == b"\xff"
+
+
+# ---------- ByteLevelBPETokenizer.encode() ----------
+
+@pytest.fixture
+def trained_tok():
+    """Tokenizer trained on 'the cat sat on the mat' — reused across tests."""
+    tok = ByteLevelBPETokenizer()
+    tok.train("the cat sat on the mat", 300)
+    return tok
+
+
+def test_encode_uses_learned_merges(trained_tok):
+    """'the cat' should use the merges: 'at'→256, 'he'→257, 'the'→258."""
+    ids = trained_tok.encode("the cat")
+    # "the" → 258 (fully merged), " cat" → 32, 99, 256
+    assert ids == [258, 32, 99, 256]
+
+
+def test_encode_training_corpus_roundtrip(trained_tok):
+    """Encoding the training text and mapping back to bytes reproduces it."""
+    text = "the cat sat on the mat"
+    ids = trained_tok.encode(text)
+    reconstructed = b"".join(trained_tok.vocab[i] for i in ids)
+    assert reconstructed == text.encode("utf-8")
+
+
+def test_encode_unseen_ascii(trained_tok):
+    """Characters not in training data encode to raw byte IDs — no error."""
+    ids = trained_tok.encode("xyz")
+    assert ids == [120, 121, 122]  # ord('x'), ord('y'), ord('z')
+
+
+def test_encode_unseen_emoji(trained_tok):
+    """Emoji decomposes into its 4 UTF-8 bytes — never raises."""
+    ids = trained_tok.encode("🎉")
+    assert ids == [0xF0, 0x9F, 0x8E, 0x89]
+
+
+def test_encode_unseen_multibyte(trained_tok):
+    """'é' (U+00E9) = 2 UTF-8 bytes: 0xC3 0xA9."""
+    ids = trained_tok.encode("é")
+    assert ids == [0xC3, 0xA9]
+
+
+def test_encode_empty_text(trained_tok):
+    assert trained_tok.encode("") == []
+
+
+def test_encode_single_byte(trained_tok):
+    """A single ASCII char that has no merge: returns its byte value."""
+    ids = trained_tok.encode("x")
+    assert ids == [120]
+
+
+def test_encode_min_rank_picks_earliest_merge(trained_tok):
+    """'heat' contains both (104,101)→rank 1 and (97,116)→rank 0.
+    Min-rank picks (97,116) first even though (104,101) is leftmost."""
+    ids = trained_tok.encode("heat")
+    # round 1: (97,116) rank 0 wins → (104, 101, 256)
+    # round 2: (104,101) rank 1 → (257, 256)
+    # = b'he' + b'at'
+    assert ids == [257, 256]
+
+
+def test_encode_fresh_tokenizer_returns_raw_bytes():
+    """Without training, encode returns one ID per byte."""
+    tok = ByteLevelBPETokenizer()
+    ids = tok.encode("abc")
+    assert ids == [97, 98, 99]
+
+
+def test_encode_fresh_tokenizer_handles_multibyte():
+    """Even without merges, multibyte UTF-8 just returns raw byte IDs."""
+    tok = ByteLevelBPETokenizer()
+    ids = tok.encode("中")
+    assert ids == list("中".encode("utf-8"))
+
+
+# ---------- ByteLevelBPETokenizer.tokenize() ----------
+
+def test_tokenize_returns_byte_content(trained_tok):
+    tokens = trained_tok.tokenize("the cat")
+    assert tokens == [b"the", b" ", b"c", b"at"]
+
+
+def test_tokenize_concatenation_is_lossless(trained_tok):
+    """Joining tokenize() output reproduces the original text as bytes."""
+    text = "the cat sat on the mat"
+    assert b"".join(trained_tok.tokenize(text)) == text.encode("utf-8")
+
+
+def test_tokenize_emoji_returns_individual_bytes(trained_tok):
+    tokens = trained_tok.tokenize("🎉")
+    assert tokens == [bytes([b]) for b in "🎉".encode("utf-8")]
