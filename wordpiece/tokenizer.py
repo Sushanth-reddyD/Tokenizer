@@ -115,6 +115,65 @@ def apply_merge(corpus: Corpus, pair: tuple[str, str]) -> Corpus:
 
 
 class WordPieceTokenizer:
-    """Placeholder — segments 3+ will fill this in."""
+    """WordPiece tokenizer (BERT lineage).
 
-    pass
+    Attributes:
+        vocab:  Mapping from token string to integer ID. IDs are assigned in
+                order: first the sorted initial alphabet (character tokens with
+                ## prefixes), then each learned merge in learning order.
+
+    Unlike byte-level BPE, the vocab maps string→int (same direction as
+    piece #1). The tokens are human-readable ("play", "##ing") rather than
+    opaque integer IDs — no bytemap needed for serialization.
+    """
+
+    def __init__(self) -> None:
+        self.vocab: dict[str, int] = {}
+
+    def train(self, text: str, vocab_size: int, verbose: bool = False) -> None:
+        """Learn WordPiece merges from `text` until the vocab reaches `vocab_size`.
+
+        Overwrites any prior training. The initial vocab is every unique
+        character token (including ## variants) found in the corpus, sorted
+        alphabetically. Merges are chosen by the WordPiece score criterion:
+
+            score(a, b) = freq(a·b) / (freq(a) * freq(b))
+
+        Ties are broken by taking the lexicographically smallest pair.
+
+        Stops when vocab_size is reached or no adjacent pairs remain.
+        """
+        corpus = build_corpus(text)
+
+        initial_tokens: set[str] = set()
+        for word in corpus:
+            initial_tokens.update(word)
+        self.vocab = {tok: i for i, tok in enumerate(sorted(initial_tokens))}
+
+        num_merges = vocab_size - len(self.vocab)
+
+        for _ in range(num_merges):
+            pair_counts = count_pairs(corpus)
+            if not pair_counts:
+                break
+
+            token_counts = count_tokens(corpus)
+            scores = score_pairs(pair_counts, token_counts)
+
+            max_score = max(scores.values())
+            best_pair = min(
+                pair for pair, s in scores.items() if s == max_score
+            )
+
+            merged_token = best_pair[0] + best_pair[1].removeprefix(
+                CONTINUATION_PREFIX
+            )
+            corpus = apply_merge(corpus, best_pair)
+            self.vocab[merged_token] = len(self.vocab)
+
+            if verbose:
+                print(
+                    f"merge {len(self.vocab) - len(initial_tokens)}/{num_merges}: "
+                    f"{best_pair} → {merged_token!r} "
+                    f"(score={max_score:.4f})"
+                )

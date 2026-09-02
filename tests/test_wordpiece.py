@@ -10,6 +10,7 @@ from wordpiece.pretokenizer import (
     pretokenize,
 )
 from wordpiece.tokenizer import (
+    WordPieceTokenizer,
     apply_merge,
     build_corpus,
     count_pairs,
@@ -314,3 +315,98 @@ def test_apply_merge_does_not_mutate():
 
 def test_apply_merge_empty():
     assert apply_merge({}, ("a", "##b")) == {}
+
+
+# ---------- WordPieceTokenizer.train() ----------
+
+def test_train_initial_vocab():
+    """Initial vocab is the sorted set of unique character tokens."""
+    tok = WordPieceTokenizer()
+    tok.train("ab ab", 2)
+    assert "a" in tok.vocab
+    assert "##b" in tok.vocab
+    assert tok.vocab["##b"] < tok.vocab["a"]  # '#' (35) < 'a' (97)
+
+
+def test_train_first_four_merges():
+    """Hand-verified merge sequence on 'low lower lowest'.
+
+    WordPiece builds from the rare end:
+      1. (##s, ##t) → ##st     score=1.000
+      2. (##e, ##r) → ##er     score=0.500
+      3. (##e, ##st) → ##est   score=1.000
+      4. (##o, ##w) → ##ow     score=0.333
+    """
+    tok = WordPieceTokenizer()
+    tok.train("low lower lowest", 11)
+
+    assert "##st" in tok.vocab
+    assert "##er" in tok.vocab
+    assert "##est" in tok.vocab
+    assert "##ow" in tok.vocab
+
+    assert tok.vocab["##st"] == 7
+    assert tok.vocab["##er"] == 8
+    assert tok.vocab["##est"] == 9
+    assert tok.vocab["##ow"] == 10
+
+
+def test_train_wordpiece_differs_from_bpe():
+    """BPE would merge (l,##o) first (count=3); WordPiece merges (##s,##t)."""
+    tok = WordPieceTokenizer()
+    tok.train("low lower lowest", 8)  # only 1 merge
+    first_merged = [t for t in tok.vocab if len(t) > 3 or (not t.startswith("##") and len(t) > 1)]
+    assert "##st" in tok.vocab  # WordPiece's first merge
+    # If BPE were used, "lo" would be the first merge instead
+
+
+def test_train_respects_vocab_size():
+    tok = WordPieceTokenizer()
+    tok.train("low lower lowest", 9)  # 7 initial + 2 merges
+    assert len(tok.vocab) == 9
+
+
+def test_train_stops_when_no_pairs():
+    """Single-char words have no pairs to merge."""
+    tok = WordPieceTokenizer()
+    tok.train("a b c", 100)
+    assert len(tok.vocab) == 3  # just a, b, c — no ## tokens, no pairs
+
+
+def test_train_overwrites_prior():
+    tok = WordPieceTokenizer()
+    tok.train("aaa aaa", 100)
+    first_vocab = dict(tok.vocab)
+    tok.train("bbb bbb", 100)
+    assert tok.vocab != first_vocab
+
+
+def test_train_empty_text():
+    tok = WordPieceTokenizer()
+    tok.train("", 100)
+    assert tok.vocab == {}
+
+
+def test_train_deterministic_tie_break():
+    """When scores tie, the lexicographically smallest pair wins."""
+    tok = WordPieceTokenizer()
+    # "low lower lowest" round 2: (##e,##r) and (##e,##st) both score 0.5
+    tok.train("low lower lowest", 9)  # 7 initial + 2 merges
+    assert tok.vocab["##st"] == 7   # merge 1
+    assert tok.vocab["##er"] == 8   # merge 2 (ties with ##e+##st, ##er < ##est)
+
+
+def test_train_merged_token_inherits_prefix():
+    """Merged tokens keep the first token's ## status."""
+    tok = WordPieceTokenizer()
+    tok.train("low lower lowest", 11)
+    assert "##st" in tok.vocab    # ## + ## → ##
+    assert "##er" in tok.vocab    # ## + ## → ##
+    assert "##ow" in tok.vocab    # ## + ## → ##
+
+
+def test_train_vocab_ids_are_contiguous():
+    tok = WordPieceTokenizer()
+    tok.train("low lower lowest", 11)
+    ids = sorted(tok.vocab.values())
+    assert ids == list(range(len(ids)))
