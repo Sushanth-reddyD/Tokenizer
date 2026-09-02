@@ -11,8 +11,10 @@ greedy longest-prefix matching against the vocab.
 Built from scratch for learning.
 """
 
+import json
 import re
 from collections import Counter
+from pathlib import Path
 
 from .pretokenizer import CONTINUATION_PREFIX, pretokenize, split_words
 
@@ -291,3 +293,43 @@ class WordPieceTokenizer:
         via special tokens to handle unknown words gracefully.
         """
         return [self.vocab[tok] for tok in self.tokenize(text, encode_special_tokens)]
+
+    def save(self, directory: str | Path) -> None:
+        """Persist the tokenizer to a directory.
+
+        Writes two files:
+          vocab.txt           — one token per line, line number = ID (BERT convention)
+          special_tokens.json — {string: ID}, only written when special tokens exist
+
+        BERT's format is simpler than GPT-2's: no bytemap needed because
+        WordPiece tokens are already human-readable strings. No merges.txt
+        because encoding uses greedy longest-match, not merge replay.
+        """
+        path = Path(directory)
+        path.mkdir(parents=True, exist_ok=True)
+
+        id_to_token = {i: tok for tok, i in self.vocab.items()}
+        with open(path / "vocab.txt", "w") as f:
+            for i in range(len(self.vocab)):
+                f.write(id_to_token[i] + "\n")
+
+        if self.special_tokens:
+            with open(path / "special_tokens.json", "w") as f:
+                json.dump(self.special_tokens, f, ensure_ascii=False, indent=2)
+
+    @classmethod
+    def load(cls, directory: str | Path) -> "WordPieceTokenizer":
+        """Load a tokenizer from a directory written by save()."""
+        path = Path(directory)
+        tok = cls()
+
+        with open(path / "vocab.txt") as f:
+            for i, line in enumerate(f):
+                tok.vocab[line.rstrip("\n")] = i
+
+        special_path = path / "special_tokens.json"
+        if special_path.exists():
+            with open(special_path) as f:
+                tok.special_tokens = json.load(f)
+
+        return tok

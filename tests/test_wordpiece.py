@@ -627,6 +627,72 @@ def test_mask_token(tok_with_specials):
     assert mask_id in ids
 
 
+# ---------- save / load ----------
+
+def test_save_creates_vocab_txt(trained_wp, tmp_path):
+    trained_wp.save(tmp_path / "tok")
+    assert (tmp_path / "tok" / "vocab.txt").exists()
+    assert not (tmp_path / "tok" / "special_tokens.json").exists()
+
+
+def test_save_creates_special_tokens_file(tok_with_specials, tmp_path):
+    tok_with_specials.save(tmp_path / "tok")
+    assert (tmp_path / "tok" / "special_tokens.json").exists()
+
+
+def test_load_reconstructs_vocab(trained_wp, tmp_path):
+    trained_wp.save(tmp_path / "tok")
+    loaded = WordPieceTokenizer.load(tmp_path / "tok")
+    assert loaded.vocab == trained_wp.vocab
+
+
+def test_load_reconstructs_special_tokens(tok_with_specials, tmp_path):
+    tok_with_specials.save(tmp_path / "tok")
+    loaded = WordPieceTokenizer.load(tmp_path / "tok")
+    assert loaded.special_tokens == tok_with_specials.special_tokens
+
+
+def test_loaded_tokenizer_encodes_identically(trained_wp, tmp_path):
+    trained_wp.save(tmp_path / "tok")
+    loaded = WordPieceTokenizer.load(tmp_path / "tok")
+    for text in ["low lower lowest", "lower low"]:
+        assert loaded.encode(text) == trained_wp.encode(text)
+
+
+def test_loaded_tokenizer_decodes_identically(trained_wp, tmp_path):
+    trained_wp.save(tmp_path / "tok")
+    loaded = WordPieceTokenizer.load(tmp_path / "tok")
+    ids = trained_wp.encode("low lower lowest")
+    assert loaded.decode(ids) == trained_wp.decode(ids)
+
+
+def test_vocab_txt_format(trained_wp, tmp_path):
+    """Line number = token ID, one token per line."""
+    trained_wp.save(tmp_path / "tok")
+    with open(tmp_path / "tok" / "vocab.txt") as f:
+        lines = [l.rstrip("\n") for l in f]
+    for token, tid in trained_wp.vocab.items():
+        assert lines[tid] == token
+
+
+def test_save_load_empty_tokenizer(tmp_path):
+    tok = WordPieceTokenizer()
+    tok.save(tmp_path / "tok")
+    loaded = WordPieceTokenizer.load(tmp_path / "tok")
+    assert loaded.vocab == {}
+    assert loaded.special_tokens == {}
+
+
+def test_loaded_special_tokens_encode(tok_with_specials, tmp_path):
+    tok_with_specials.save(tmp_path / "tok")
+    loaded = WordPieceTokenizer.load(tmp_path / "tok")
+    ids = loaded.encode("[CLS] low [SEP]", encode_special_tokens=True)
+    cls_id = loaded.special_tokens["[CLS]"]
+    sep_id = loaded.special_tokens["[SEP]"]
+    assert ids[0] == cls_id
+    assert ids[-1] == sep_id
+
+
 # ---------- WordPieceTokenizer.decode() ----------
 
 def test_decode_simple(trained_wp):
