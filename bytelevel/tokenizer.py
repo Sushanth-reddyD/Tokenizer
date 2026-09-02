@@ -14,6 +14,7 @@ fuse the most frequent one, repeat. Only the element type moved from str to int.
 Built from scratch for learning.
 """
 
+import re
 from collections import Counter
 
 from .pretokenizer import pretokenize
@@ -128,8 +129,28 @@ class ByteLevelBPETokenizer:
     def __init__(self) -> None:
         self.vocab: dict[int, bytes] = {i: bytes([i]) for i in range(256)}
         self.merges: list[tuple[int, int]] = []
+        self.special_tokens: dict[str, int] = {}
 
-    def train(self, text: str, vocab_size: int, verbose: bool = False) -> None:
+    def add_special_tokens(self, tokens: list[str]) -> dict[str, int]:
+        """Register special tokens with IDs beyond the BPE merge range.
+
+        Each token gets the next available ID. Duplicates are silently skipped.
+        Returns the full special_tokens mapping (including any previously added).
+        """
+        for s in tokens:
+            if s not in self.special_tokens:
+                sid = len(self.vocab)
+                self.vocab[sid] = s.encode("utf-8")
+                self.special_tokens[s] = sid
+        return dict(self.special_tokens)
+
+    def train(
+        self,
+        text: str,
+        vocab_size: int,
+        special_tokens: list[str] | None = None,
+        verbose: bool = False,
+    ) -> None:
         """Learn BPE merges from `text` until the vocab reaches `vocab_size`.
 
         Overwrites any prior training on this instance. Stops early when no pair
@@ -142,6 +163,9 @@ class ByteLevelBPETokenizer:
         structural, and the only tie-break left is between equally frequent
         pairs, resolved by taking the lexicographically smallest.
 
+        Special tokens (if given) are added after BPE training with IDs beyond
+        the merge range. They do not count toward vocab_size.
+
         Raises ValueError if `vocab_size` is below 256, which cannot represent
         the base bytes.
         """
@@ -153,6 +177,7 @@ class ByteLevelBPETokenizer:
 
         self.vocab = {i: bytes([i]) for i in range(256)}
         self.merges = []
+        self.special_tokens = {}
 
         corpus = build_corpus(text)
         num_merges = vocab_size - 256
@@ -184,15 +209,28 @@ class ByteLevelBPETokenizer:
                     f"({max_count} occurrences) {self.vocab[new_id]!r}"
                 )
 
-    def encode(self, text: str) -> list[int]:
+        if special_tokens:
+            self.add_special_tokens(special_tokens)
+
+    def encode(
+        self, text: str, encode_special_tokens: bool = False
+    ) -> list[int]:
         """Encode text into a list of integer token IDs.
 
-        Uses the per-chunk min-rank algorithm: for each pretokenized chunk,
-        repeatedly find the adjacent pair with the lowest rank (earliest
-        learned merge) and apply it, until no known pair remains.
+        When encode_special_tokens is False (the default), the entire text is
+        treated as ordinary — special token strings like '<|endoftext|>' get
+        pretokenized and BPE-encoded as regular bytes. This is the safe default:
+        user-supplied text should not accidentally become control tokens.
 
-        Never raises on unseen input — every byte is in the base vocab.
+        When True, registered special tokens are recognised as atomic units,
+        and the text between them is BPE-encoded separately.
         """
+        if encode_special_tokens and self.special_tokens:
+            return self._encode_with_specials(text)
+        return self._encode_ordinary(text)
+
+    def _encode_ordinary(self, text: str) -> list[int]:
+        """BPE-encode text without any special-token handling."""
         ranks = {pair: rank for rank, pair in enumerate(self.merges)}
         ids: list[int] = []
         for chunk_bytes in pretokenize(text):
@@ -212,6 +250,20 @@ class ByteLevelBPETokenizer:
             ids.extend(chunk)
         return ids
 
+    def _encode_with_specials(self, text: str) -> list[int]:
+        """Split text on special token boundaries, BPE-encode each gap."""
+        pattern = "(" + "|".join(
+            re.escape(s)
+            for s in sorted(self.special_tokens, key=len, reverse=True)
+        ) + ")"
+        ids: list[int] = []
+        for part in re.split(pattern, text):
+            if part in self.special_tokens:
+                ids.append(self.special_tokens[part])
+            elif part:
+                ids.extend(self._encode_ordinary(part))
+        return ids
+
     def decode(self, ids: list[int]) -> str:
         """Decode a list of token IDs back into a string.
 
@@ -229,7 +281,9 @@ class ByteLevelBPETokenizer:
         raw = b"".join(self.vocab[i] for i in ids)
         return raw.decode("utf-8", errors="replace")
 
-    def tokenize(self, text: str) -> list[bytes]:
+    def tokenize(
+        self, text: str, encode_special_tokens: bool = False
+    ) -> list[bytes]:
         """Segment text into BPE tokens (byte strings).
 
         Convenience wrapper around encode() — maps each ID back to its byte
@@ -240,4 +294,4 @@ class ByteLevelBPETokenizer:
         returned strings, encode() wrapped it. Here encode() is primary
         because the merge algorithm works with integer IDs natively.
         """
-        return [self.vocab[i] for i in self.encode(text)]
+        return [self.vocab[i] for i in self.encode(text, encode_special_tokens)]

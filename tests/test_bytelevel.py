@@ -617,3 +617,114 @@ def test_decode_fresh_tokenizer_roundtrip():
     tok = ByteLevelBPETokenizer()
     text = "hello 世界"
     assert tok.decode(tok.encode(text)) == text
+
+
+# ---------- Special tokens ----------
+
+SPECIAL_TOKENS = ["<|endoftext|>", "<|im_start|>", "<|im_end|>"]
+
+
+@pytest.fixture
+def tok_with_specials():
+    tok = ByteLevelBPETokenizer()
+    tok.train("the cat sat on the mat", 300, special_tokens=SPECIAL_TOKENS)
+    return tok
+
+
+def test_special_tokens_get_ids_after_merges(tok_with_specials):
+    """Special token IDs start after the last BPE merge."""
+    bpe_ids = set(range(259))  # 256 base + 3 merges
+    for s, sid in tok_with_specials.special_tokens.items():
+        assert sid >= 259
+        assert sid not in bpe_ids
+
+
+def test_special_tokens_in_vocab(tok_with_specials):
+    for s, sid in tok_with_specials.special_tokens.items():
+        assert tok_with_specials.vocab[sid] == s.encode("utf-8")
+
+
+def test_special_tokens_ids_are_sequential(tok_with_specials):
+    ids = sorted(tok_with_specials.special_tokens.values())
+    assert ids == [259, 260, 261]
+
+
+def test_encode_without_flag_treats_specials_as_ordinary(tok_with_specials):
+    """Default encode() does NOT recognise special tokens — safe for user input."""
+    ids_ordinary = tok_with_specials.encode("<|endoftext|>")
+    assert tok_with_specials.special_tokens["<|endoftext|>"] not in ids_ordinary
+    assert len(ids_ordinary) > 1
+
+
+def test_encode_with_flag_recognises_special_token(tok_with_specials):
+    eot_id = tok_with_specials.special_tokens["<|endoftext|>"]
+    ids = tok_with_specials.encode("<|endoftext|>", encode_special_tokens=True)
+    assert ids == [eot_id]
+
+
+def test_encode_mixed_text_and_specials(tok_with_specials):
+    eot_id = tok_with_specials.special_tokens["<|endoftext|>"]
+    ids = tok_with_specials.encode(
+        "the<|endoftext|>the", encode_special_tokens=True
+    )
+    the_ids = tok_with_specials.encode("the")
+    assert ids == the_ids + [eot_id] + the_ids
+
+
+def test_encode_multiple_specials(tok_with_specials):
+    im_start = tok_with_specials.special_tokens["<|im_start|>"]
+    im_end = tok_with_specials.special_tokens["<|im_end|>"]
+    ids = tok_with_specials.encode(
+        "<|im_start|>hello<|im_end|>", encode_special_tokens=True
+    )
+    hello_ids = tok_with_specials.encode("hello")
+    assert ids == [im_start] + hello_ids + [im_end]
+
+
+def test_encode_adjacent_specials(tok_with_specials):
+    eot = tok_with_specials.special_tokens["<|endoftext|>"]
+    im_start = tok_with_specials.special_tokens["<|im_start|>"]
+    ids = tok_with_specials.encode(
+        "<|endoftext|><|im_start|>", encode_special_tokens=True
+    )
+    assert ids == [eot, im_start]
+
+
+def test_decode_roundtrip_with_specials(tok_with_specials):
+    text = "hello<|endoftext|>world"
+    ids = tok_with_specials.encode(text, encode_special_tokens=True)
+    assert tok_with_specials.decode(ids) == text
+
+
+def test_tokenize_with_specials(tok_with_specials):
+    tokens = tok_with_specials.tokenize(
+        "the<|endoftext|>", encode_special_tokens=True
+    )
+    assert b"<|endoftext|>" in tokens
+
+
+def test_add_special_tokens_after_training():
+    tok = ByteLevelBPETokenizer()
+    tok.train("the cat sat on the mat", 300)
+    assert tok.special_tokens == {}
+    mapping = tok.add_special_tokens(["<|endoftext|>"])
+    assert "<|endoftext|>" in mapping
+    assert tok.vocab[mapping["<|endoftext|>"]] == b"<|endoftext|>"
+
+
+def test_add_special_tokens_skips_duplicates():
+    tok = ByteLevelBPETokenizer()
+    tok.add_special_tokens(["<|a|>", "<|b|>"])
+    first_ids = dict(tok.special_tokens)
+    tok.add_special_tokens(["<|a|>", "<|c|>"])
+    assert tok.special_tokens["<|a|>"] == first_ids["<|a|>"]
+    assert tok.special_tokens["<|b|>"] == first_ids["<|b|>"]
+    assert "<|c|>" in tok.special_tokens
+
+
+def test_longer_special_token_matches_first():
+    """'<|end|>' must not steal from '<|endoftext|>'."""
+    tok = ByteLevelBPETokenizer()
+    tok.add_special_tokens(["<|end|>", "<|endoftext|>"])
+    ids = tok.encode("<|endoftext|>", encode_special_tokens=True)
+    assert ids == [tok.special_tokens["<|endoftext|>"]]
