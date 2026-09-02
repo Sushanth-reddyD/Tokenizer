@@ -561,3 +561,59 @@ def test_tokenize_concatenation_is_lossless(trained_tok):
 def test_tokenize_emoji_returns_individual_bytes(trained_tok):
     tokens = trained_tok.tokenize("🎉")
     assert tokens == [bytes([b]) for b in "🎉".encode("utf-8")]
+
+
+# ---------- ByteLevelBPETokenizer.decode() ----------
+
+def test_decode_reverses_encode(trained_tok):
+    text = "the cat sat on the mat"
+    assert trained_tok.decode(trained_tok.encode(text)) == text
+
+
+def test_decode_roundtrip_unseen_text(trained_tok):
+    text = "hello world"
+    assert trained_tok.decode(trained_tok.encode(text)) == text
+
+
+def test_decode_roundtrip_unicode(trained_tok):
+    for text in ["café", "中文测试", "🎉🚀", "a\tb\nc"]:
+        assert trained_tok.decode(trained_tok.encode(text)) == text
+
+
+def test_decode_roundtrip_whitespace(trained_tok):
+    """Whitespace is in-band — spaces, tabs, newlines all roundtrip."""
+    text = "hello   world\n\nnew\tline"
+    assert trained_tok.decode(trained_tok.encode(text)) == text
+
+
+def test_decode_empty_ids(trained_tok):
+    assert trained_tok.decode([]) == ""
+
+
+def test_decode_single_base_byte(trained_tok):
+    assert trained_tok.decode([65]) == "A"
+
+
+def test_decode_merged_token(trained_tok):
+    assert trained_tok.decode([258]) == "the"
+
+
+def test_decode_unknown_id_raises(trained_tok):
+    with pytest.raises(KeyError):
+        trained_tok.decode([99999])
+
+
+def test_decode_invalid_utf8_uses_replacement_char():
+    """Model-generated IDs can produce invalid UTF-8. errors='replace'
+    substitutes U+FFFD instead of crashing."""
+    tok = ByteLevelBPETokenizer()
+    # 0xC3 is the start of a 2-byte sequence, but 0x41 ('A') is not
+    # a valid continuation byte.
+    assert tok.decode([0xC3, 0x41]) == "�A"
+
+
+def test_decode_fresh_tokenizer_roundtrip():
+    """Even without training, decode(encode(text)) is lossless."""
+    tok = ByteLevelBPETokenizer()
+    text = "hello 世界"
+    assert tok.decode(tok.encode(text)) == text

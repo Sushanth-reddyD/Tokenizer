@@ -212,6 +212,23 @@ class ByteLevelBPETokenizer:
             ids.extend(chunk)
         return ids
 
+    def decode(self, ids: list[int]) -> str:
+        """Decode a list of token IDs back into a string.
+
+        Concatenates each token's byte content and decodes the result as UTF-8.
+
+        Piece #1 had to replace </w> with spaces and strip trailing whitespace.
+        Here whitespace is in-band (byte 32 is a regular token), so decode is
+        pure concatenation + UTF-8 decoding — no post-processing needed.
+
+        Uses errors='replace' so that invalid byte sequences (possible when
+        decoding model-generated IDs) produce U+FFFD rather than crashing.
+
+        Raises KeyError if an ID is not in the vocab.
+        """
+        raw = b"".join(self.vocab[i] for i in ids)
+        return raw.decode("utf-8", errors="replace")
+
     def tokenize(self, text: str) -> list[bytes]:
         """Segment text into BPE tokens (byte strings).
 
