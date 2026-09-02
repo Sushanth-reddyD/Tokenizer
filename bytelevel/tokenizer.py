@@ -14,9 +14,12 @@ fuse the most frequent one, repeat. Only the element type moved from str to int.
 Built from scratch for learning.
 """
 
+import json
 import re
 from collections import Counter
+from pathlib import Path
 
+from .bytemap import decode_token, encode_token
 from .pretokenizer import pretokenize
 
 Vocab = dict[int, bytes]
@@ -295,3 +298,76 @@ class ByteLevelBPETokenizer:
         because the merge algorithm works with integer IDs natively.
         """
         return [self.vocab[i] for i in self.encode(text, encode_special_tokens)]
+
+    def save(self, directory: str | Path) -> None:
+        """Persist the tokenizer to a directory.
+
+        Writes three files following GPT-2 conventions:
+          vocab.json          — {bytemap-encoded token string: ID} for every token
+          merges.txt          — one merge per line, space-separated bytemap pair
+          special_tokens.json — {string: ID}, only written when special tokens exist
+
+        The bytemap (segment 2) is applied here: each token's raw bytes are
+        converted to a printable, whitespace-free string via encode_token().
+        This is the ONLY place the bytemap touches the data — train(), encode(),
+        and decode() never see it.
+        """
+        path = Path(directory)
+        path.mkdir(parents=True, exist_ok=True)
+
+        encoded_vocab = {
+            encode_token(token_bytes): token_id
+            for token_id, token_bytes in self.vocab.items()
+        }
+        with open(path / "vocab.json", "w") as f:
+            json.dump(encoded_vocab, f, ensure_ascii=False, indent=2)
+
+        with open(path / "merges.txt", "w") as f:
+            for a, b in self.merges:
+                f.write(
+                    f"{encode_token(self.vocab[a])} {encode_token(self.vocab[b])}\n"
+                )
+
+        if self.special_tokens:
+            with open(path / "special_tokens.json", "w") as f:
+                json.dump(self.special_tokens, f, ensure_ascii=False, indent=2)
+
+    @classmethod
+    def load(cls, directory: str | Path) -> "ByteLevelBPETokenizer":
+        """Load a tokenizer from a directory written by save().
+
+        Reconstructs vocab, merges, and special_tokens. The bytemap is inverted
+        here: decode_token() converts each printable string back to raw bytes.
+        """
+        path = Path(directory)
+        tok = cls()
+
+        with open(path / "vocab.json") as f:
+            raw_vocab: dict[str, int] = json.load(f)
+
+        tok.vocab = {}
+        bytes_to_id: dict[bytes, int] = {}
+        for token_str, token_id in raw_vocab.items():
+            token_bytes = decode_token(token_str)
+            tok.vocab[token_id] = token_bytes
+            bytes_to_id[token_bytes] = token_id
+
+        tok.merges = []
+        with open(path / "merges.txt") as f:
+            for line in f:
+                line = line.rstrip("\n")
+                if not line:
+                    continue
+                a_str, b_str = line.split(" ")
+                tok.merges.append((
+                    bytes_to_id[decode_token(a_str)],
+                    bytes_to_id[decode_token(b_str)],
+                ))
+
+        tok.special_tokens = {}
+        special_path = path / "special_tokens.json"
+        if special_path.exists():
+            with open(special_path) as f:
+                tok.special_tokens = json.load(f)
+
+        return tok

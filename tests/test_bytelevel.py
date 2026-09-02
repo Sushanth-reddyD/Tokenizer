@@ -728,3 +728,100 @@ def test_longer_special_token_matches_first():
     tok.add_special_tokens(["<|end|>", "<|endoftext|>"])
     ids = tok.encode("<|endoftext|>", encode_special_tokens=True)
     assert ids == [tok.special_tokens["<|endoftext|>"]]
+
+
+# ---------- ByteLevelBPETokenizer.save() / load() ----------
+
+def test_save_creates_expected_files(trained_tok, tmp_path):
+    trained_tok.save(tmp_path / "tok")
+    assert (tmp_path / "tok" / "vocab.json").exists()
+    assert (tmp_path / "tok" / "merges.txt").exists()
+    assert not (tmp_path / "tok" / "special_tokens.json").exists()
+
+
+def test_save_creates_special_tokens_file_when_present(tmp_path):
+    tok = ByteLevelBPETokenizer()
+    tok.train("the cat sat on the mat", 300, special_tokens=["<|endoftext|>"])
+    tok.save(tmp_path / "tok")
+    assert (tmp_path / "tok" / "special_tokens.json").exists()
+
+
+def test_load_reconstructs_vocab_and_merges(trained_tok, tmp_path):
+    trained_tok.save(tmp_path / "tok")
+    loaded = ByteLevelBPETokenizer.load(tmp_path / "tok")
+    assert loaded.vocab == trained_tok.vocab
+    assert loaded.merges == trained_tok.merges
+
+
+def test_load_reconstructs_special_tokens(tmp_path):
+    tok = ByteLevelBPETokenizer()
+    tok.train("the cat sat on the mat", 300, special_tokens=SPECIAL_TOKENS)
+    tok.save(tmp_path / "tok")
+    loaded = ByteLevelBPETokenizer.load(tmp_path / "tok")
+    assert loaded.special_tokens == tok.special_tokens
+
+
+def test_loaded_tokenizer_encodes_identically(trained_tok, tmp_path):
+    trained_tok.save(tmp_path / "tok")
+    loaded = ByteLevelBPETokenizer.load(tmp_path / "tok")
+    for text in ["the cat sat on the mat", "hello world", "café 🎉"]:
+        assert loaded.encode(text) == trained_tok.encode(text)
+
+
+def test_loaded_tokenizer_decodes_identically(trained_tok, tmp_path):
+    trained_tok.save(tmp_path / "tok")
+    loaded = ByteLevelBPETokenizer.load(tmp_path / "tok")
+    text = "the cat sat on the mat"
+    assert loaded.decode(loaded.encode(text)) == text
+
+
+def test_loaded_special_tokens_encode(tmp_path):
+    tok = ByteLevelBPETokenizer()
+    tok.train("the cat sat on the mat", 300, special_tokens=["<|endoftext|>"])
+    tok.save(tmp_path / "tok")
+    loaded = ByteLevelBPETokenizer.load(tmp_path / "tok")
+    ids = loaded.encode("hello<|endoftext|>world", encode_special_tokens=True)
+    eot_id = loaded.special_tokens["<|endoftext|>"]
+    assert eot_id in ids
+
+
+def test_vocab_json_uses_bytemap_encoding(trained_tok, tmp_path):
+    import json
+    trained_tok.save(tmp_path / "tok")
+    with open(tmp_path / "tok" / "vocab.json") as f:
+        raw = json.load(f)
+    assert "Ġ" in raw       # byte 32 (space) → 'Ġ'
+    assert raw["Ġ"] == 32
+    assert "a" in raw
+    assert raw["a"] == 97
+    assert "at" in raw       # merged token b'at'
+    assert raw["at"] == 256
+
+
+def test_merges_txt_has_bytemap_pairs(trained_tok, tmp_path):
+    trained_tok.save(tmp_path / "tok")
+    with open(tmp_path / "tok" / "merges.txt") as f:
+        lines = [l.rstrip("\n") for l in f if l.strip()]
+    assert lines[0] == "a t"     # merge (97,116): b'a' b't'
+    assert lines[1] == "h e"     # merge (104,101): b'h' b'e'
+    assert lines[2] == "t he"    # merge (116,257): b't' b'he'
+
+
+def test_save_load_roundtrip_fresh_tokenizer(tmp_path):
+    """A fresh (untrained) tokenizer survives save/load."""
+    tok = ByteLevelBPETokenizer()
+    tok.save(tmp_path / "tok")
+    loaded = ByteLevelBPETokenizer.load(tmp_path / "tok")
+    assert loaded.vocab == tok.vocab
+    assert loaded.merges == []
+    assert loaded.special_tokens == {}
+
+
+def test_save_load_roundtrip_with_multibyte_merges(tmp_path):
+    """Merges on UTF-8 multibyte tokens use the bytemap correctly."""
+    tok = ByteLevelBPETokenizer()
+    tok.train("éé éé éé", 257)
+    tok.save(tmp_path / "tok")
+    loaded = ByteLevelBPETokenizer.load(tmp_path / "tok")
+    assert loaded.merges == tok.merges
+    assert loaded.encode("éé") == tok.encode("éé")
