@@ -9,7 +9,13 @@ from bytelevel.bytemap import (
     unicode_to_bytes,
 )
 from bytelevel.pretokenizer import pretokenize, split_text
-from bytelevel.tokenizer import apply_merge, build_corpus, count_pairs, merge_chunk
+from bytelevel.tokenizer import (
+    ByteLevelBPETokenizer,
+    apply_merge,
+    build_corpus,
+    count_pairs,
+    merge_chunk,
+)
 
 
 # ---------- split_text: the lossless invariant ----------
@@ -351,3 +357,112 @@ def test_apply_merge_does_not_mutate_input():
 
 def test_apply_merge_empty_corpus():
     assert apply_merge({}, (1, 2), 256) == {}
+
+
+# ---------- ByteLevelBPETokenizer.train() ----------
+
+def test_train_base_vocab_always_present():
+    """Even before any merges, all 256 byte values are in the vocab."""
+    tok = ByteLevelBPETokenizer()
+    tok.train("hello", 256)
+    assert len(tok.vocab) == 256
+    assert tok.merges == []
+    for i in range(256):
+        assert tok.vocab[i] == bytes([i])
+
+
+def test_train_rejects_vocab_size_below_256():
+    tok = ByteLevelBPETokenizer()
+    with pytest.raises(ValueError, match="at least 256"):
+        tok.train("hello", 100)
+
+
+def test_train_first_three_merges():
+    """Hand-verified merge sequence on 'the cat sat on the mat'.
+
+    Pair counts at each step:
+      round 1: (97,116)=3 wins — merges 'a','t' → 256  (b'at')
+      round 2: (104,101)=2 and (116,104)=2 tie → (104,101) wins by min()
+               → 257  (b'he')
+      round 3: (116,257)=2 wins — merges 't',257 → 258  (b'the')
+      round 4: all pairs have count 1 → stop
+    """
+    tok = ByteLevelBPETokenizer()
+    tok.train("the cat sat on the mat", 300)
+
+    assert tok.merges == [(97, 116), (104, 101), (116, 257)]
+    assert tok.vocab[256] == b"at"
+    assert tok.vocab[257] == b"he"
+    assert tok.vocab[258] == b"the"
+    assert len(tok.vocab) == 259
+
+
+def test_train_vocab_tracks_byte_content():
+    """Each merged token's bytes equals the concatenation of its constituents."""
+    tok = ByteLevelBPETokenizer()
+    tok.train("the cat sat on the mat", 300)
+    for a, b in tok.merges:
+        merge_id = 256 + tok.merges.index((a, b))
+        assert tok.vocab[merge_id] == tok.vocab[a] + tok.vocab[b]
+
+
+def test_train_stops_when_no_pair_repeats():
+    """'abcd' has all unique pairs (each count=1) → no merges."""
+    tok = ByteLevelBPETokenizer()
+    tok.train("abcd", 300)
+    assert tok.merges == []
+    assert len(tok.vocab) == 256
+
+
+def test_train_respects_vocab_size_cap():
+    """With vocab_size=257, only one merge happens even if more are possible."""
+    tok = ByteLevelBPETokenizer()
+    tok.train("the cat sat on the mat", 257)
+    assert len(tok.merges) == 1
+    assert tok.merges[0] == (97, 116)
+    assert len(tok.vocab) == 257
+
+
+def test_train_overwrites_prior_training():
+    tok = ByteLevelBPETokenizer()
+    tok.train("aaa aaa aaa", 300)
+    first_merges = list(tok.merges)
+    assert len(first_merges) > 0
+
+    tok.train("bbb bbb bbb", 300)
+    assert tok.merges != first_merges
+
+
+def test_train_deterministic_tie_break():
+    """When two pairs have equal count, the lexicographically smaller tuple wins."""
+    tok = ByteLevelBPETokenizer()
+    tok.train("the cat sat on the mat", 258)
+    assert tok.merges[1] == (104, 101)  # (104,101) < (116,104)
+
+
+def test_train_empty_text():
+    tok = ByteLevelBPETokenizer()
+    tok.train("", 300)
+    assert tok.merges == []
+    assert len(tok.vocab) == 256
+
+
+def test_train_multibyte_utf8():
+    """Merges happen on byte ids, so a 2-byte UTF-8 char is two base tokens."""
+    tok = ByteLevelBPETokenizer()
+    tok.train("éé éé éé", 257)
+    # 'é' = bytes 0xC3 0xA9 = (195, 169)
+    # The leading-space variants ' éé' contribute (32,195) once and (195,169)
+    # twice each, but 'éé' (no space) also contributes (195,169) twice.
+    # So (195,169) appears most frequently → first merge.
+    assert tok.merges[0] == (195, 169)
+    assert tok.vocab[256] == b"\xc3\xa9"  # the full UTF-8 'é'
+
+
+def test_fresh_tokenizer_has_base_vocab():
+    """A freshly constructed tokenizer already has the 256-byte base vocab."""
+    tok = ByteLevelBPETokenizer()
+    assert len(tok.vocab) == 256
+    assert tok.vocab[0] == b"\x00"
+    assert tok.vocab[32] == b" "
+    assert tok.vocab[255] == b"\xff"

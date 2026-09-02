@@ -18,6 +18,8 @@ from collections import Counter
 
 from .pretokenizer import pretokenize
 
+Vocab = dict[int, bytes]
+
 # A corpus is unique-chunk -> how many times that chunk occurred. Piece #1
 # added this grouping later as an optimization (54s -> 12s on tinyshakespeare);
 # here it is the native representation from the start, which is why there is
@@ -101,3 +103,83 @@ def apply_merge(corpus: Corpus, pair: tuple[int, int], new_id: int) -> Corpus:
         merged = merge_chunk(chunk, pair, new_id)
         new_corpus[merged] = new_corpus.get(merged, 0) + freq
     return new_corpus
+
+
+class ByteLevelBPETokenizer:
+    """Byte-level Byte Pair Encoding tokenizer.
+
+    Attributes:
+        vocab:  Mapping from token ID to the bytes that token spells. IDs 0-255
+                are the raw byte values; learned merges are numbered from 256 up.
+        merges: Ordered list of (a, b) ID pairs learned by train(). Position in
+                the list is the merge's "rank" — earlier = learned first.
+
+    Note the split of concerns between the two. `merges` holds the *structural*
+    fact that IDs a and b fuse; `vocab` holds the *payload*, the bytes that ID
+    spells. Piece #1 fused both into one string. Keeping them apart is what lets
+    encode() work purely off `merges` and decode() work purely off `vocab`.
+
+    A freshly constructed tokenizer is already the identity byte tokenizer: the
+    256 base entries are present, so it encodes and decodes any text losslessly
+    with zero compression. Piece #1's fresh instance had an empty vocab and
+    raised on everything.
+    """
+
+    def __init__(self) -> None:
+        self.vocab: dict[int, bytes] = {i: bytes([i]) for i in range(256)}
+        self.merges: list[tuple[int, int]] = []
+
+    def train(self, text: str, vocab_size: int, verbose: bool = False) -> None:
+        """Learn BPE merges from `text` until the vocab reaches `vocab_size`.
+
+        Overwrites any prior training on this instance. Stops early when no pair
+        repeats, since further merges would compress nothing — so the final vocab
+        can be smaller than requested (same behaviour as piece #1).
+
+        Unlike piece #1 there is no alphabet discovery pass: the base vocabulary
+        is the 256 byte values, identical for every corpus, and it needs no
+        sorting because the IDs *are* the byte values. Determinism is therefore
+        structural, and the only tie-break left is between equally frequent
+        pairs, resolved by taking the lexicographically smallest.
+
+        Raises ValueError if `vocab_size` is below 256, which cannot represent
+        the base bytes.
+        """
+        if vocab_size < 256:
+            raise ValueError(
+                f"vocab_size must be at least 256 to hold the base bytes, "
+                f"got {vocab_size}"
+            )
+
+        self.vocab = {i: bytes([i]) for i in range(256)}
+        self.merges = []
+
+        corpus = build_corpus(text)
+        num_merges = vocab_size - 256
+
+        for _ in range(num_merges):
+            pair_counts = count_pairs(corpus)
+            if not pair_counts:
+                break
+
+            max_count = max(pair_counts.values())
+            if max_count < 2:
+                break
+
+            best_pair = min(
+                pair for pair, count in pair_counts.items() if count == max_count
+            )
+
+            new_id = len(self.vocab)
+            corpus = apply_merge(corpus, best_pair, new_id)
+            # The concatenation piece #1 did on token strings happens here
+            # instead, on the bytes payload rather than on the ID.
+            self.vocab[new_id] = self.vocab[best_pair[0]] + self.vocab[best_pair[1]]
+            self.merges.append(best_pair)
+
+            if verbose:
+                print(
+                    f"merge {len(self.merges)}/{num_merges}: "
+                    f"{best_pair} -> {new_id} "
+                    f"({max_count} occurrences) {self.vocab[new_id]!r}"
+                )
