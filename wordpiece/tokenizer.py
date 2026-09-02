@@ -13,7 +13,9 @@ Built from scratch for learning.
 
 from collections import Counter
 
-from .pretokenizer import CONTINUATION_PREFIX, pretokenize
+from .pretokenizer import CONTINUATION_PREFIX, pretokenize, split_words
+
+UNK_TOKEN = "[UNK]"
 
 Corpus = dict[tuple[str, ...], int]
 
@@ -177,3 +179,51 @@ class WordPieceTokenizer:
                     f"{best_pair} → {merged_token!r} "
                     f"(score={max_score:.4f})"
                 )
+
+    def tokenize(self, text: str) -> list[str]:
+        """Segment text into WordPiece token strings.
+
+        Uses greedy longest-prefix matching — for each word, repeatedly find
+        the longest prefix in the vocab and emit it. If any character in a
+        word is not reachable (not even as a single-char token), the entire
+        word becomes [UNK].
+
+        This is fundamentally different from BPE's merge-replay algorithm.
+        BPE needs the ordered merge list to reconstruct tokens. WordPiece
+        just does a vocab lookup — no merge history required.
+        """
+        tokens: list[str] = []
+        for word in split_words(text):
+            subtokens = self._tokenize_word(word)
+            tokens.extend(subtokens)
+        return tokens
+
+    def _tokenize_word(self, word: str) -> list[str]:
+        """Greedy longest-prefix tokenization of a single word."""
+        tokens: list[str] = []
+        start = 0
+        while start < len(word):
+            end = len(word)
+            matched = None
+            while start < end:
+                substr = word[start:end]
+                if start > 0:
+                    substr = CONTINUATION_PREFIX + substr
+                if substr in self.vocab:
+                    matched = substr
+                    break
+                end -= 1
+            if matched is None:
+                return [UNK_TOKEN]
+            tokens.append(matched)
+            start = end
+        return tokens
+
+    def encode(self, text: str) -> list[int]:
+        """Encode text into a list of integer token IDs.
+
+        Wraps tokenize() with a vocab lookup. Raises KeyError if a token
+        (including [UNK]) is not in the vocab — add [UNK] to the vocab
+        via special tokens (segment 6) to handle unknown words gracefully.
+        """
+        return [self.vocab[tok] for tok in self.tokenize(text)]

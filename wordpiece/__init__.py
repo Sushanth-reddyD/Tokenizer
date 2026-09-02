@@ -8,5 +8,5 @@ longest-prefix matching against the vocab.
 Built from scratch for learning.
 """
 
-from .pretokenizer import pretokenize
+from .pretokenizer import pretokenize, split_words
 from .tokenizer import WordPieceTokenizer

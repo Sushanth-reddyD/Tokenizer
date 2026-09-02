@@ -72,6 +72,24 @@ def _to_wordpiece_chars(word: str) -> list[str]:
     return [word[0]] + [CONTINUATION_PREFIX + c for c in word[1:]]
 
 
+def split_words(text: str) -> list[str]:
+    """Split text into words (whitespace + punctuation) without ## chars.
+
+    Used by the encoder, which needs raw word strings for the greedy
+    longest-prefix algorithm. pretokenize() goes one step further and
+    splits each word into ## character tokens — that's for training.
+
+    Example:
+        split_words("Hello, world!")  →  ["Hello", ",", "world", "!"]
+    """
+    words: list[str] = []
+    for raw_word in text.strip().split():
+        for subword in _split_on_punctuation(raw_word):
+            if subword:
+                words.append(subword)
+    return words
+
+
 def pretokenize(text: str) -> list[list[str]]:
     """BERT-style pretokenization: whitespace → punctuation → ## chars.
 
