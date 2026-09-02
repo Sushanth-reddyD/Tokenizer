@@ -11,6 +11,7 @@ greedy longest-prefix matching against the vocab.
 Built from scratch for learning.
 """
 
+import re
 from collections import Counter
 
 from .pretokenizer import CONTINUATION_PREFIX, pretokenize, split_words
@@ -131,8 +132,22 @@ class WordPieceTokenizer:
 
     def __init__(self) -> None:
         self.vocab: dict[str, int] = {}
+        self.special_tokens: dict[str, int] = {}
 
-    def train(self, text: str, vocab_size: int, verbose: bool = False) -> None:
+    def add_special_tokens(self, tokens: list[str]) -> dict[str, int]:
+        """Register special tokens with IDs beyond the current vocab.
+
+        Duplicates are silently skipped. Returns the full special_tokens
+        mapping.
+        """
+        for s in tokens:
+            if s not in self.special_tokens:
+                sid = len(self.vocab)
+                self.vocab[s] = sid
+                self.special_tokens[s] = sid
+        return dict(self.special_tokens)
+
+    def train(self, text: str, vocab_size: int, special_tokens: list[str] | None = None, verbose: bool = False) -> None:
         """Learn WordPiece merges from `text` until the vocab reaches `vocab_size`.
 
         Overwrites any prior training. The initial vocab is every unique
@@ -151,6 +166,7 @@ class WordPieceTokenizer:
         for word in corpus:
             initial_tokens.update(word)
         self.vocab = {tok: i for i, tok in enumerate(sorted(initial_tokens))}
+        self.special_tokens = {}
 
         num_merges = vocab_size - len(self.vocab)
 
@@ -180,7 +196,10 @@ class WordPieceTokenizer:
                     f"(score={max_score:.4f})"
                 )
 
-    def tokenize(self, text: str) -> list[str]:
+        if special_tokens:
+            self.add_special_tokens(special_tokens)
+
+    def tokenize(self, text: str, encode_special_tokens: bool = False) -> list[str]:
         """Segment text into WordPiece token strings.
 
         Uses greedy longest-prefix matching — for each word, repeatedly find
@@ -188,14 +207,34 @@ class WordPieceTokenizer:
         word is not reachable (not even as a single-char token), the entire
         word becomes [UNK].
 
-        This is fundamentally different from BPE's merge-replay algorithm.
-        BPE needs the ordered merge list to reconstruct tokens. WordPiece
-        just does a vocab lookup — no merge history required.
+        When encode_special_tokens is True, registered special tokens are
+        recognised as atomic units and the text between them is tokenized
+        separately. Same safe-by-default pattern as piece #2.
         """
+        if encode_special_tokens and self.special_tokens:
+            return self._tokenize_with_specials(text)
+        return self._tokenize_ordinary(text)
+
+    def _tokenize_ordinary(self, text: str) -> list[str]:
+        """WordPiece tokenization without special-token handling."""
         tokens: list[str] = []
         for word in split_words(text):
             subtokens = self._tokenize_word(word)
             tokens.extend(subtokens)
+        return tokens
+
+    def _tokenize_with_specials(self, text: str) -> list[str]:
+        """Split text on special token boundaries, tokenize each gap."""
+        pattern = "(" + "|".join(
+            re.escape(s)
+            for s in sorted(self.special_tokens, key=len, reverse=True)
+        ) + ")"
+        tokens: list[str] = []
+        for part in re.split(pattern, text):
+            if part in self.special_tokens:
+                tokens.append(part)
+            elif part:
+                tokens.extend(self._tokenize_ordinary(part))
         return tokens
 
     def _tokenize_word(self, word: str) -> list[str]:
@@ -244,11 +283,11 @@ class WordPieceTokenizer:
                 parts.append(token)
         return "".join(parts)
 
-    def encode(self, text: str) -> list[int]:
+    def encode(self, text: str, encode_special_tokens: bool = False) -> list[int]:
         """Encode text into a list of integer token IDs.
 
         Wraps tokenize() with a vocab lookup. Raises KeyError if a token
         (including [UNK]) is not in the vocab — add [UNK] to the vocab
-        via special tokens (segment 6) to handle unknown words gracefully.
+        via special tokens to handle unknown words gracefully.
         """
-        return [self.vocab[tok] for tok in self.tokenize(text)]
+        return [self.vocab[tok] for tok in self.tokenize(text, encode_special_tokens)]

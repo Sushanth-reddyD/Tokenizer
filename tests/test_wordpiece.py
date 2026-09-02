@@ -530,6 +530,103 @@ def test_encode_unk_raises_without_unk_in_vocab():
         tok.encode("abc")
 
 
+# ---------- Special tokens ----------
+
+BERT_SPECIALS = ["[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]"]
+
+
+@pytest.fixture
+def tok_with_specials():
+    tok = WordPieceTokenizer()
+    tok.train("low lower lowest", 15, special_tokens=BERT_SPECIALS)
+    return tok
+
+
+def test_special_tokens_in_vocab(tok_with_specials):
+    for s in BERT_SPECIALS:
+        assert s in tok_with_specials.vocab
+        assert s in tok_with_specials.special_tokens
+
+
+def test_special_token_ids_after_merges(tok_with_specials):
+    """Special token IDs come after all trained tokens."""
+    max_trained_id = max(
+        v for k, v in tok_with_specials.vocab.items()
+        if k not in tok_with_specials.special_tokens
+    )
+    for sid in tok_with_specials.special_tokens.values():
+        assert sid > max_trained_id
+
+
+def test_encode_without_flag_ignores_specials(tok_with_specials):
+    """Default encode treats [CLS] as ordinary text."""
+    ids = tok_with_specials.encode("[CLS]")
+    cls_id = tok_with_specials.special_tokens["[CLS]"]
+    assert cls_id not in ids
+
+
+def test_encode_with_flag_recognises_specials(tok_with_specials):
+    cls_id = tok_with_specials.special_tokens["[CLS]"]
+    sep_id = tok_with_specials.special_tokens["[SEP]"]
+    ids = tok_with_specials.encode(
+        "[CLS] low [SEP]", encode_special_tokens=True
+    )
+    assert ids[0] == cls_id
+    assert ids[-1] == sep_id
+
+
+def test_encode_unk_works_with_special_tokens(tok_with_specials):
+    """[UNK] in vocab means encoding unknown chars no longer raises."""
+    ids = tok_with_specials.encode("xyz", encode_special_tokens=True)
+    unk_id = tok_with_specials.special_tokens["[UNK]"]
+    assert ids == [unk_id]
+
+
+def test_encode_mixed_specials_and_text(tok_with_specials):
+    ids = tok_with_specials.encode(
+        "[CLS] low lower [SEP]", encode_special_tokens=True
+    )
+    cls_id = tok_with_specials.special_tokens["[CLS]"]
+    sep_id = tok_with_specials.special_tokens["[SEP]"]
+    assert ids[0] == cls_id
+    assert ids[-1] == sep_id
+    assert len(ids) > 2  # text tokens in between
+
+
+def test_decode_roundtrip_with_specials(tok_with_specials):
+    text = "[CLS] low lower [SEP]"
+    ids = tok_with_specials.encode(text, encode_special_tokens=True)
+    decoded = tok_with_specials.decode(ids)
+    assert decoded == text
+
+
+def test_add_special_tokens_after_training():
+    tok = WordPieceTokenizer()
+    tok.train("low lower lowest", 15)
+    assert tok.special_tokens == {}
+    tok.add_special_tokens(["[UNK]"])
+    assert "[UNK]" in tok.vocab
+    assert "[UNK]" in tok.special_tokens
+
+
+def test_add_special_tokens_skips_duplicates():
+    tok = WordPieceTokenizer()
+    tok.add_special_tokens(["[A]", "[B]"])
+    first = dict(tok.special_tokens)
+    tok.add_special_tokens(["[A]", "[C]"])
+    assert tok.special_tokens["[A]"] == first["[A]"]
+    assert "[C]" in tok.special_tokens
+
+
+def test_mask_token(tok_with_specials):
+    """[MASK] encodes as a single token."""
+    ids = tok_with_specials.encode(
+        "[CLS] low [MASK] [SEP]", encode_special_tokens=True
+    )
+    mask_id = tok_with_specials.special_tokens["[MASK]"]
+    assert mask_id in ids
+
+
 # ---------- WordPieceTokenizer.decode() ----------
 
 def test_decode_simple(trained_wp):
