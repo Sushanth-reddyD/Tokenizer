@@ -219,6 +219,31 @@ class WordPieceTokenizer:
             start = end
         return tokens
 
+    def decode(self, ids: list[int]) -> str:
+        """Decode a list of token IDs back into a string.
+
+        Reverses encode(): maps IDs to token strings, joins them with ##
+        tokens concatenated directly and non-## tokens separated by spaces.
+
+        Like piece #1, the roundtrip is lossy — str.split() collapses
+        whitespace and punctuation splitting adds spaces:
+            decode(encode("Hello, world!")) → "Hello , world !"
+        Piece #2 avoided this because whitespace was in-band.
+
+        Raises KeyError if an ID is not in the vocab.
+        """
+        id_to_token = {i: tok for tok, i in self.vocab.items()}
+        parts: list[str] = []
+        for token_id in ids:
+            token = id_to_token[token_id]
+            if token.startswith(CONTINUATION_PREFIX):
+                parts.append(token.removeprefix(CONTINUATION_PREFIX))
+            else:
+                if parts:
+                    parts.append(" ")
+                parts.append(token)
+        return "".join(parts)
+
     def encode(self, text: str) -> list[int]:
         """Encode text into a list of integer token IDs.
 

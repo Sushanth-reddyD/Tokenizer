@@ -528,3 +528,69 @@ def test_encode_unk_raises_without_unk_in_vocab():
     tok.vocab = {"a": 0, "##b": 1}
     with pytest.raises(KeyError):
         tok.encode("abc")
+
+
+# ---------- WordPieceTokenizer.decode() ----------
+
+def test_decode_simple(trained_wp):
+    ids = trained_wp.encode("low")
+    assert trained_wp.decode(ids) == "low"
+
+
+def test_decode_multiple_words(trained_wp):
+    ids = trained_wp.encode("low lower")
+    decoded = trained_wp.decode(ids)
+    assert decoded == "low lower"
+
+
+def test_decode_roundtrip_training_corpus(trained_wp):
+    text = "low lower lowest"
+    assert trained_wp.decode(trained_wp.encode(text)) == text
+
+
+def test_decode_continuation_strips_prefix():
+    """## tokens concatenate directly without a space."""
+    tok = WordPieceTokenizer()
+    tok.vocab = {"play": 0, "##ing": 1}
+    ids = [0, 1]
+    assert tok.decode(ids) == "playing"
+
+
+def test_decode_non_continuation_adds_space():
+    """Non-## tokens get a space between them."""
+    tok = WordPieceTokenizer()
+    tok.vocab = {"hello": 0, "world": 1}
+    assert tok.decode([0, 1]) == "hello world"
+
+
+def test_decode_punctuation_gets_space():
+    """Punctuation was split into its own word, so decode adds spaces."""
+    tok = WordPieceTokenizer()
+    tok.vocab = {"hello": 0, ",": 1, "world": 2}
+    assert tok.decode([0, 1, 2]) == "hello , world"
+
+
+def test_decode_empty():
+    tok = WordPieceTokenizer()
+    tok.vocab = {"a": 0}
+    assert tok.decode([]) == ""
+
+
+def test_decode_single_token():
+    tok = WordPieceTokenizer()
+    tok.vocab = {"hello": 0}
+    assert tok.decode([0]) == "hello"
+
+
+def test_decode_unknown_id_raises():
+    tok = WordPieceTokenizer()
+    tok.vocab = {"a": 0}
+    with pytest.raises(KeyError):
+        tok.decode([999])
+
+
+def test_decode_unk_token():
+    """[UNK] decodes as the literal string '[UNK]'."""
+    tok = WordPieceTokenizer()
+    tok.vocab = {"hello": 0, "[UNK]": 1, "world": 2}
+    assert tok.decode([0, 1, 2]) == "hello [UNK] world"
