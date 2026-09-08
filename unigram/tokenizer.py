@@ -113,3 +113,48 @@ def viterbi_tokenize(text: str, vocab: dict[str, float]) -> list[str]:
         i = back[i]
     pieces.reverse()
     return pieces
+
+
+def compute_loss(corpus: list[str], vocab: dict[str, float]) -> float:
+    """Total negative log-likelihood of *corpus* under *vocab*.
+
+    Each element of *corpus* is a pretokenized chunk (word).  We tokenize
+    it with Viterbi and sum the **negative** log-probabilities of all
+    resulting pieces.
+    """
+    total = 0.0
+    for chunk in corpus:
+        pieces = viterbi_tokenize(chunk, vocab)
+        total += sum(-vocab[p] for p in pieces)
+    return total
+
+
+def compute_piece_scores(
+    corpus: list[str], vocab: dict[str, float]
+) -> dict[str, float]:
+    """For each vocab piece, compute how much loss increases if it is removed.
+
+    Returns ``{piece: delta_loss}``.  Single characters are excluded
+    (they can never be removed — coverage guarantee).  A higher score
+    means the piece is more important to keep.
+    """
+    base_loss = compute_loss(corpus, vocab)
+    scores: dict[str, float] = {}
+
+    for piece in list(vocab):
+        # Never remove single characters.
+        if len(piece) == 1:
+            continue
+
+        # Temporarily remove the piece and re-score.
+        saved = vocab.pop(piece)
+        try:
+            new_loss = compute_loss(corpus, vocab)
+            scores[piece] = new_loss - base_loss
+        except ValueError:
+            # Removal made some chunk unsegmentable — piece is essential.
+            scores[piece] = float("inf")
+        finally:
+            vocab[piece] = saved
+
+    return scores

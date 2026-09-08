@@ -2,7 +2,13 @@ import math
 
 import pytest
 
-from unigram.tokenizer import build_seed_vocab, pretokenize, viterbi_tokenize
+from unigram.tokenizer import (
+    build_seed_vocab,
+    compute_loss,
+    compute_piece_scores,
+    pretokenize,
+    viterbi_tokenize,
+)
 
 
 # ---------- pretokenize ----------
@@ -95,3 +101,53 @@ def test_viterbi_missing_char_raises():
     vocab = {"a": -1.0}
     with pytest.raises(ValueError, match="Cannot segment"):
         viterbi_tokenize("ab", vocab)
+
+
+# ---------- compute_loss ----------
+
+def test_compute_loss_single_chunk():
+    """Loss = sum of negative log-probs of the Viterbi segmentation."""
+    vocab = {"a": -1.0, "b": -2.0}
+    # "ab" → ["a", "b"], loss = -(-1.0) + -(-2.0) = 3.0
+    assert math.isclose(compute_loss(["ab"], vocab), 3.0)
+
+
+def test_compute_loss_multi_chunk():
+    vocab = {"a": -1.0, "b": -2.0}
+    # Two chunks: "ab" (loss 3.0) + "a" (loss 1.0) = 4.0
+    assert math.isclose(compute_loss(["ab", "a"], vocab), 4.0)
+
+
+def test_compute_loss_empty_corpus():
+    vocab = {"a": -1.0}
+    assert compute_loss([], vocab) == 0.0
+
+
+# ---------- compute_piece_scores ----------
+
+def test_piece_scores_useful_piece_has_positive_delta():
+    """Removing a useful piece should increase loss (positive delta)."""
+    vocab = {"a": -1.0, "b": -1.0, "ab": -0.5}
+    # With "ab": "ab" → ["ab"], loss = 0.5
+    # Without "ab": "ab" → ["a","b"], loss = 2.0
+    # delta = 2.0 - 0.5 = 1.5
+    scores = compute_piece_scores(["ab"], vocab)
+    assert "ab" in scores
+    assert math.isclose(scores["ab"], 1.5)
+
+
+def test_piece_scores_excludes_single_chars():
+    """Single-character pieces must never appear in scores."""
+    vocab = {"a": -1.0, "b": -1.0, "ab": -0.5}
+    scores = compute_piece_scores(["ab"], vocab)
+    assert "a" not in scores
+    assert "b" not in scores
+
+
+def test_piece_scores_useless_piece_has_zero_delta():
+    """A piece not used by Viterbi should have delta ~0."""
+    vocab = {"a": -0.5, "b": -0.5, "ab": -10.0}
+    # Viterbi picks ["a","b"] (score -1) over ["ab"] (score -10).
+    # Removing "ab" doesn't change the segmentation.
+    scores = compute_piece_scores(["ab"], vocab)
+    assert math.isclose(scores["ab"], 0.0, abs_tol=1e-12)
