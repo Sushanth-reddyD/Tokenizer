@@ -65,3 +65,51 @@ def build_seed_vocab(text: str, max_seed_size: int = 16) -> dict[str, float]:
 
     total = sum(counts.values())
     return {piece: math.log(freq / total) for piece, freq in counts.items()}
+
+
+def viterbi_tokenize(text: str, vocab: dict[str, float]) -> list[str]:
+    """Find the maximum-likelihood segmentation of *text* under *vocab*.
+
+    Uses the Viterbi algorithm (dynamic programming).  For each position
+    *i* in the string, we find the best previous position *j* such that
+    ``text[j:i]`` is in *vocab* and the total log-probability is maximised.
+    Then backtrack from the end to recover the segmentation.
+
+    Raises ``ValueError`` if *text* cannot be segmented (a character is
+    missing from *vocab*).
+    """
+    n = len(text)
+    if n == 0:
+        return []
+
+    NEG_INF = float("-inf")
+
+    # best_score[i] = best log-prob for text[:i].  best_score[0] = 0.
+    best_score = [NEG_INF] * (n + 1)
+    best_score[0] = 0.0
+
+    # back[i] = the start position of the last piece ending at i.
+    back = [0] * (n + 1)
+
+    for i in range(1, n + 1):
+        for j in range(i):
+            piece = text[j:i]
+            if piece in vocab:
+                score = best_score[j] + vocab[piece]
+                if score > best_score[i]:
+                    best_score[i] = score
+                    back[i] = j
+
+    if best_score[n] == NEG_INF:
+        raise ValueError(
+            f"Cannot segment {text!r}: some character not in vocab"
+        )
+
+    # Backtrack.
+    pieces: list[str] = []
+    i = n
+    while i > 0:
+        pieces.append(text[back[i]:i])
+        i = back[i]
+    pieces.reverse()
+    return pieces
